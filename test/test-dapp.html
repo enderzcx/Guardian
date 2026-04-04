@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Guardian Test dApp</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #111; color: #eee; font-family: monospace; padding: 40px; }
+    h1 { margin-bottom: 20px; }
+    button { padding: 12px 24px; margin: 8px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-family: monospace; }
+    .green { background: #2d5a27; color: #fff; }
+    .yellow { background: #5a4f27; color: #fff; }
+    .red { background: #5a2727; color: #fff; }
+    #log { margin-top: 20px; padding: 16px; background: #1a1a2e; border-radius: 8px; font-size: 12px; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h1>Guardian 照妖镜 — Test dApp</h1>
+  <p style="opacity:0.5; margin-bottom:20px;">Open Chrome DevTools console to see Guardian logs. Make sure extension is loaded from dist/.</p>
+
+  <div>
+    <h3 style="margin:16px 0 8px;">Green (safe) scenarios:</h3>
+    <button class="green" onclick="testSwap()">Uniswap Swap (100 USDC → ETH)</button>
+    <button class="green" onclick="testTransfer()">ETH Transfer (0.1 ETH)</button>
+  </div>
+
+  <div>
+    <h3 style="margin:16px 0 8px;">Yellow (caution) scenarios:</h3>
+    <button class="yellow" onclick="testApprove()">Unlimited USDC Approve</button>
+    <button class="yellow" onclick="testPermit2()">Permit2 Signature</button>
+  </div>
+
+  <div>
+    <h3 style="margin:16px 0 8px;">Red (danger) scenarios:</h3>
+    <button class="red" onclick="testSetApprovalForAll()">setApprovalForAll (NFTs)</button>
+    <button class="red" onclick="testUnknownContract()">Unknown Contract Call</button>
+  </div>
+
+  <div>
+    <h3 style="margin:16px 0 8px;">Config:</h3>
+    <input id="apiKey" type="password" placeholder="OpenAI API Key (sk-...)" style="padding:8px; width:400px; background:#222; color:#eee; border:1px solid #333; border-radius:4px;">
+    <button class="green" onclick="setKey()">Save Key</button>
+  </div>
+
+  <div id="log">Waiting for actions...</div>
+
+  <script>
+    function log(msg) {
+      const el = document.getElementById('log');
+      el.textContent += '\n' + new Date().toISOString().slice(11,19) + ' ' + msg;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    // Mock window.ethereum if no real wallet is installed
+    if (!window.ethereum) {
+      log('No wallet detected. Creating mock window.ethereum...');
+      window.ethereum = {
+        request: async ({ method, params }) => {
+          log(`[mock wallet] ${method} called`);
+          // Simulate a response
+          if (method === 'eth_sendTransaction') return '0xmocktxhash';
+          if (method.startsWith('eth_signTypedData')) return '0xmocksignature';
+          return null;
+        },
+        isMetaMask: true,
+      };
+      log('Mock wallet ready. Guardian should wrap it.');
+    } else {
+      log('Real wallet detected: ' + (window.ethereum.isMetaMask ? 'MetaMask' : 'Unknown'));
+    }
+
+    // -- Test functions --
+
+    async function testSwap() {
+      log('Sending: Uniswap V2 swapExactTokensForTokens...');
+      try {
+        // ABI encoded swapExactTokensForTokens(100e6, 0, [USDC, WETH], user, deadline)
+        const result = await window.ethereum.request({
+          method: 'eth_sendTransaction',
+          params: [{
+            from: '0x1234567890abcdef1234567890abcdef12345678',
+            to: '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D', // Uniswap V2 Router
+            value: '0x0',
+            data: '0x38ed1739' +
+              '0000000000000000000000000000000000000000000000000000000005f5e100' + // 100e6
+              '0000000000000000000000000000000000000000000000000000000000000000' + // 0
+              '00000000000000000000000000000000000000000000000000000000000000a0' +
+              '0000000000000000000000001234567890abcdef1234567890abcdef12345678' +
+              '00000000000000000000000000000000000000000000000000000000ffffffff' +
+              '0000000000000000000000000000000000000000000000000000000000000002' +
+              '000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' + // USDC
+              '000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',  // WETH
+            gas: '0x30000',
+          }],
+        });
+        log('Result: ' + result);
+      } catch (e) {
+        log('Rejected: ' + e.message);
+      }
+    }
+
+    async function testTransfer() {
+      log('Sending: native ETH transfer...');
+      try {
+        const result = await window.ethereum.request({
+          method: 'eth_sendTransaction',
+          params: [{
+            from: '0x1234567890abcdef1234567890abcdef12345678',
+            to: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+            value: '0x16345785D8A0000', // 0.1 ETH
+            data: '0x',
+          }],
+        });
+        log('Result: ' + result);
+      } catch (e) {
+        log('Rejected: ' + e.message);
+      }
+    }
+
+    async function testApprove() {
+      log('Sending: unlimited USDC approve...');
+      try {
+        // approve(spender, uint256.max)
+        const result = await window.ethereum.request({
+          method: 'eth_sendTransaction',
+          params: [{
+            from: '0x1234567890abcdef1234567890abcdef12345678',
+            to: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC
+            value: '0x0',
+            data: '0x095ea7b3' +
+              '0000000000000000000000007b2f3f1e2684c3e7d8b3a45e3e6f5f2a1b0c9d8e' + // random spender
+              'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',   // max uint256
+          }],
+        });
+        log('Result: ' + result);
+      } catch (e) {
+        log('Rejected: ' + e.message);
+      }
+    }
+
+    async function testPermit2() {
+      log('Sending: Permit2 EIP-712 signature...');
+      try {
+        const result = await window.ethereum.request({
+          method: 'eth_signTypedData_v4',
+          params: [
+            '0x1234567890abcdef1234567890abcdef12345678',
+            JSON.stringify({
+              domain: {
+                name: 'Permit2',
+                chainId: 1,
+                verifyingContract: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+              },
+              primaryType: 'PermitSingle',
+              types: {
+                PermitSingle: [
+                  { name: 'details', type: 'PermitDetails' },
+                  { name: 'spender', type: 'address' },
+                  { name: 'sigDeadline', type: 'uint256' },
+                ],
+                PermitDetails: [
+                  { name: 'token', type: 'address' },
+                  { name: 'amount', type: 'uint160' },
+                  { name: 'expiration', type: 'uint48' },
+                  { name: 'nonce', type: 'uint48' },
+                ],
+                EIP712Domain: [
+                  { name: 'name', type: 'string' },
+                  { name: 'chainId', type: 'uint256' },
+                  { name: 'verifyingContract', type: 'address' },
+                ],
+              },
+              message: {
+                details: {
+                  token: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+                  amount: '1461501637330902918203684832716283019655932542975', // max uint160
+                  expiration: '1735689600',
+                  nonce: '0',
+                },
+                spender: '0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD',
+                sigDeadline: '1735689600',
+              },
+            }),
+          ],
+        });
+        log('Result: ' + result);
+      } catch (e) {
+        log('Rejected: ' + e.message);
+      }
+    }
+
+    async function testSetApprovalForAll() {
+      log('Sending: setApprovalForAll (NFTs)...');
+      try {
+        // setApprovalForAll(operator, true)
+        const result = await window.ethereum.request({
+          method: 'eth_sendTransaction',
+          params: [{
+            from: '0x1234567890abcdef1234567890abcdef12345678',
+            to: '0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D', // BAYC
+            value: '0x0',
+            data: '0xa22cb465' +
+              '000000000000000000000000deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' + // suspicious operator
+              '0000000000000000000000000000000000000000000000000000000000000001',   // true
+          }],
+        });
+        log('Result: ' + result);
+      } catch (e) {
+        log('Rejected: ' + e.message);
+      }
+    }
+
+    async function testUnknownContract() {
+      log('Sending: unknown function on unknown contract...');
+      try {
+        const result = await window.ethereum.request({
+          method: 'eth_sendTransaction',
+          params: [{
+            from: '0x1234567890abcdef1234567890abcdef12345678',
+            to: '0x0000000000000000000000000000000000001337',
+            value: '0x0',
+            data: '0xdeadbeef' +
+              '0000000000000000000000000000000000000000000000000000000000000042',
+          }],
+        });
+        log('Result: ' + result);
+      } catch (e) {
+        log('Rejected: ' + e.message);
+      }
+    }
+
+    async function setKey() {
+      const key = document.getElementById('apiKey').value;
+      if (!key) { log('No key entered'); return; }
+      // Send to Guardian extension via postMessage (will be caught by content script)
+      // Actually need to use chrome.runtime.sendMessage, but from page we can't.
+      // Instead, store via a custom event the content script listens for.
+      log('To set API key, open extension popup or run in DevTools console:');
+      log('  chrome.runtime.sendMessage("<EXT_ID>", {type:"SET_API_KEY", key:"sk-..."})');
+      log('Or use: chrome.storage.local.set({openai_api_key: "sk-..."})');
+    }
+  </script>
+</body>
+</html>

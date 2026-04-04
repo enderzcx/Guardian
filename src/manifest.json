@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Guardian — 照妖镜",
+  "version": "0.1.0",
+  "description": "AI reads your transactions so you don't have to.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://43.159.171.118:8080/*",
+    "https://*.etherscan.io/*",
+    "https://*.sourcify.dev/*",
+    "https://api.gopluslabs.io/*",
+    "https://api.coingecko.com/*",
+    "https://www.4byte.directory/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/overlay.ts"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_icon": {
+      "16": "src/assets/icon-16.png",
+      "48": "src/assets/icon-48.png",
+      "128": "src/assets/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "src/assets/icon-16.png",
+    "48": "src/assets/icon-48.png",
+    "128": "src/assets/icon-128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["src/inject/provider-proxy.js"],
+      "matches": ["https://*/*", "http://*/*"]
+    }
+  ]
+}
