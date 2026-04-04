@@ -40,6 +40,8 @@ export function App(): React.JSX.Element {
     <div style={{ padding: 16, minHeight: 480 }}>
       <Header enabled={enabled} onToggle={toggleEnabled} onSettings={() => setShowSettings(!showSettings)} />
 
+      <DashboardButton />
+
       {showSettings ? (
         <Settings apiKey={apiKey} setApiKey={setApiKey} saveKey={saveKey} clearAll={clearAll} />
       ) : (
@@ -75,6 +77,24 @@ function Header({ enabled, onToggle, onSettings }: {
         </button>
       </div>
     </div>
+  );
+}
+
+function DashboardButton() {
+  const openDashboard = () => {
+    chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD' });
+    window.close();
+  };
+  return (
+    <button onClick={openDashboard} style={{
+      width: '100%', padding: '10px', marginBottom: 12, borderRadius: 8,
+      background: '#222240', border: '1px solid rgba(255,255,255,0.08)',
+      color: '#e0e0e0', cursor: 'pointer', fontSize: 13, fontWeight: 500,
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    }}>
+      <span>Approval Dashboard</span>
+      <span style={{ opacity: 0.4 }}>&rarr;</span>
+    </button>
   );
 }
 

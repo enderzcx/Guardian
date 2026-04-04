@@ -18,5 +18,10 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: false,
+    rollupOptions: {
+      input: {
+        dashboard: resolve(__dirname, 'src/dashboard/index.html'),
+      },
+    },
   },
 });

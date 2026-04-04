@@ -121,6 +121,37 @@ function init() {
     }
   });
 
+  // Handle dashboard queries from content script
+  window.addEventListener('message', async (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (data?.nonce !== SESSION_NONCE) return;
+
+    if (data.type === 'guardian:getAddress') {
+      try {
+        const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+        window.postMessage({
+          type: 'guardian:addressResult',
+          id: data.id,
+          address: accounts?.[0] ?? null,
+        }, '*');
+      } catch {
+        window.postMessage({ type: 'guardian:addressResult', id: data.id, address: null }, '*');
+      }
+    }
+
+    if (data.type === 'guardian:sendTx' && data.tx) {
+      try {
+        await window.ethereum.request({
+          method: 'eth_sendTransaction',
+          params: [data.tx],
+        });
+      } catch (e) {
+        console.error('[Guardian] Revoke tx failed:', e);
+      }
+    }
+  });
+
   console.log('[Guardian] Provider proxy initialized');
 }
 

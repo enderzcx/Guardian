@@ -14,6 +14,8 @@ import { buildQueryPlan, extractTargetAddress } from '@/core/query-strategy';
 import { fetchAllContext } from '@/core/context-fetcher';
 import { computeTokenFlow } from '@/core/token-flow';
 import { addTxRecord, updateTxDecision, updateTxAI, incrementScanned } from '@/core/tx-history';
+import { scanApprovals, clearApprovalCache } from '@/core/approval-scanner';
+import { buildRevokeTx } from '@/core/revoke-tx';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
@@ -38,6 +40,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'SET_API_KEY' && typeof message.key === 'string') {
     setApiKey(message.key).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (message.type === 'SCAN_APPROVALS') {
+    // Get user address from active tab, then scan
+    getActiveTabAddress().then(async (addr) => {
+      if (!addr) {
+        sendResponse({ error: 'Connect your wallet first to scan approvals', approvals: [], address: '' });
+        return;
+      }
+      const approvals = await scanApprovals(addr);
+      sendResponse({ approvals, address: addr });
+    }).catch(() => sendResponse({ error: 'Scan failed', approvals: [], address: '' }));
+    return true;
+  }
+
+  if (message.type === 'REVOKE_APPROVAL' && message.approval) {
+    getActiveTabAddress().then(async (addr) => {
+      if (!addr) { sendResponse({ ok: false }); return; }
+      const tx = buildRevokeTx(message.approval, addr);
+      // Send revoke tx via active tab's ethereum provider
+      const tabId = await getActiveTabId();
+      if (tabId === undefined) { sendResponse({ ok: false }); return; }
+      chrome.tabs.sendMessage(tabId, { type: 'SEND_REVOKE_TX', tx });
+      await clearApprovalCache();
+      sendResponse({ ok: true });
+    }).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (message.type === 'OPEN_DASHBOARD') {
+    chrome.tabs.create({ url: chrome.runtime.getURL('src/dashboard/index.html') });
+    sendResponse({ ok: true });
     return true;
   }
 
@@ -198,6 +233,22 @@ function setBadge(level: string): void {
 
 function clearBadge(): void {
   chrome.action.setBadgeText({ text: '' });
+}
+
+async function getActiveTabId(): Promise<number | undefined> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab?.id;
+}
+
+async function getActiveTabAddress(): Promise<string | null> {
+  const tabId = await getActiveTabId();
+  if (tabId === undefined) return null;
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'GET_USER_ADDRESS' });
+    return response?.address ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function isGuardianEnabled(): Promise<boolean> {

@@ -97,8 +97,27 @@ window.addEventListener('message', async (event: MessageEvent) => {
   }
 });
 
-// Handle Tier 2 AI updates + cleanup
-chrome.runtime.onMessage.addListener((msg) => {
+// Handle Tier 2 AI updates + cleanup + dashboard queries
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === 'GET_USER_ADDRESS') {
+    // Ask the page's ethereum for the connected account
+    const id = `addr-${Date.now()}`;
+    window.postMessage({ type: 'guardian:getAddress', nonce: sessionNonce, id }, '*');
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === 'guardian:addressResult' && event.data?.id === id) {
+        window.removeEventListener('message', handler);
+        sendResponse({ address: event.data.address ?? null });
+      }
+    };
+    window.addEventListener('message', handler);
+    setTimeout(() => { window.removeEventListener('message', handler); sendResponse({ address: null }); }, 3000);
+    return true;
+  }
+  if (msg.type === 'SEND_REVOKE_TX' && msg.tx) {
+    // Forward revoke tx to page's ethereum
+    window.postMessage({ type: 'guardian:sendTx', nonce: sessionNonce, tx: msg.tx }, '*');
+    return;
+  }
   if (msg.type === 'TIER2_UPDATE') {
     const p = msg.payload;
     if (!p || typeof p.id !== 'string' || typeof p.score !== 'number' || typeof p.explanation !== 'string') return;
