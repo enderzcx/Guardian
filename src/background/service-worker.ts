@@ -24,9 +24,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(fallback('unknown'));
       return true;
     }
-    handleAnalyze(p.id, p.method, p.params, sender.tab?.id)
-      .then(sendResponse)
-      .catch(() => sendResponse(fallback(p.id as string)));
+    isGuardianEnabled().then((enabled) => {
+      if (!enabled) {
+        sendResponse(null); // skip analysis when disabled
+        return;
+      }
+      handleAnalyze(p.id, p.method, p.params, sender.tab?.id)
+        .then(sendResponse)
+        .catch(() => sendResponse(fallback(p.id as string)));
+    });
     return true;
   }
 
@@ -114,6 +120,8 @@ async function triggerTier2(
 
     if (cached) {
       pushUpdate(tabId, tier1.id, cached.score, cached.explanation, cached.risk_factors);
+      await updateTxAI(tier1.id, cached.score, cached.explanation);
+      setBadge(cached.score <= 30 ? 'green' : cached.score <= 70 ? 'yellow' : 'red');
       return;
     }
 
@@ -140,6 +148,8 @@ async function triggerTier2(
       setCache(cacheKey, response);
       pushUpdate(tabId, tier1.id, response.score, response.explanation, response.risk_factors);
       await updateTxAI(tier1.id, response.score, response.explanation);
+      const newLevel = response.score <= 30 ? 'green' : response.score <= 70 ? 'yellow' : 'red';
+      setBadge(newLevel);
     }
   } catch (error) {
     console.error('[Guardian] Tier 2 failed:', error);
@@ -188,6 +198,11 @@ function setBadge(level: string): void {
 
 function clearBadge(): void {
   chrome.action.setBadgeText({ text: '' });
+}
+
+async function isGuardianEnabled(): Promise<boolean> {
+  const result = await chrome.storage.local.get('guardian_enabled');
+  return result.guardian_enabled !== false;
 }
 
 console.log('[Guardian] Service worker started');

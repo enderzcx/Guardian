@@ -62,7 +62,7 @@ window.addEventListener('message', async (event: MessageEvent) => {
     method: string; params: unknown[]; id: string;
   };
 
-  let result: AnalysisResult;
+  let result: AnalysisResult | null;
   try {
     result = await chrome.runtime.sendMessage({
       type: 'ANALYZE_TRANSACTION',
@@ -74,6 +74,12 @@ window.addEventListener('message', async (event: MessageEvent) => {
       summary: `Intercepted ${method}`,
       decoded: null, tokenFlow: null, aiExplanation: null,
     };
+  }
+
+  // Guardian disabled — let tx through without UI
+  if (!result) {
+    sendDecision(id, true);
+    return;
   }
 
   renderCard(getShadowRoot(), result, (approved) => sendDecision(id, approved));
