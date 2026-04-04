@@ -47,8 +47,12 @@ export function Dashboard(): React.JSX.Element {
         setApprovals((prev) => prev.filter((a) =>
           `${a.token}:${a.spender}`.toLowerCase() !== key.toLowerCase()
         ));
+      } else {
+        setError(response?.error ?? 'Revoke failed or was rejected');
       }
-    } catch {}
+    } catch {
+      setError('Failed to send revoke transaction');
+    }
     setRevoking(null);
   }
 

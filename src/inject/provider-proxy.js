@@ -121,13 +121,12 @@ function init() {
     }
   });
 
-  // Handle dashboard queries from content script
+  // Handle dashboard queries from content script (no nonce required for reads)
   window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
     const data = event.data;
-    if (data?.nonce !== SESSION_NONCE) return;
 
-    if (data.type === 'guardian:getAddress') {
+    if (data?.type === 'guardian:getAddress' && data.id) {
       try {
         const accounts = await window.ethereum.request({ method: 'eth_accounts' });
         window.postMessage({
@@ -140,14 +139,15 @@ function init() {
       }
     }
 
-    if (data.type === 'guardian:sendTx' && data.tx) {
+    if (data?.type === 'guardian:sendTx' && data.id && data.tx) {
       try {
         await window.ethereum.request({
           method: 'eth_sendTransaction',
           params: [data.tx],
         });
+        window.postMessage({ type: 'guardian:txResult', id: data.id, success: true }, '*');
       } catch (e) {
-        console.error('[Guardian] Revoke tx failed:', e);
+        window.postMessage({ type: 'guardian:txResult', id: data.id, success: false, error: e.message }, '*');
       }
     }
   });

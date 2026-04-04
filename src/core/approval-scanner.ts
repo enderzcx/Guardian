@@ -118,9 +118,6 @@ function parseApprovalLog(log: EtherscanLog): ActiveApproval | null {
   const spender = extractAddress(log.topics[2]);
   const amount = log.data === '0x' ? '0' : BigInt(log.data).toString();
 
-  // amount=0 means revoked
-  if (amount === '0') return null;
-
   const unlimited = isUnlimitedAmount(amount);
   const known = lookupContract(token);
   const spenderKnown = lookupContract(spender);
@@ -132,7 +129,7 @@ function parseApprovalLog(log: EtherscanLog): ActiveApproval | null {
     spenderName: spenderKnown?.name ?? shortenAddr(spender),
     amount,
     isUnlimited: unlimited,
-    type: 'erc20',
+    type: 'erc20' as const,
     timestamp: parseInt(log.timeStamp, 16) * 1000,
     txHash: log.transactionHash,
     riskLevel: scoreApprovalRisk(unlimited, spenderKnown !== null),
@@ -145,9 +142,7 @@ function parseApprovalForAllLog(log: EtherscanLog): ActiveApproval | null {
   const token = extractAddress(log.address);
   const operator = extractAddress(log.topics[2]);
 
-  // data contains bool: approved or revoked
   const approved = log.data !== '0x' + '0'.repeat(64);
-  if (!approved) return null;
 
   const known = lookupContract(token);
   const operatorKnown = lookupContract(operator);
@@ -157,8 +152,8 @@ function parseApprovalForAllLog(log: EtherscanLog): ActiveApproval | null {
     tokenName: known?.name ?? shortenAddr(token),
     spender: operator,
     spenderName: operatorKnown?.name ?? shortenAddr(operator),
-    amount: 'ALL',
-    isUnlimited: true,
+    amount: approved ? 'ALL' : '0',
+    isUnlimited: approved,
     type: 'nft-all',
     timestamp: parseInt(log.timeStamp, 16) * 1000,
     txHash: log.transactionHash,
@@ -178,7 +173,7 @@ function scoreApprovalRisk(
 
 /**
  * Deduplicate by (token, spender) — keep latest event only.
- * If latest is a revoke (amount=0), it's already filtered out.
+ * Then filter out revokes (amount=0) — a later revoke cancels earlier approvals.
  */
 function deduplicateApprovals(approvals: ActiveApproval[]): ActiveApproval[] {
   const map = new Map<string, ActiveApproval>();
@@ -187,8 +182,10 @@ function deduplicateApprovals(approvals: ActiveApproval[]): ActiveApproval[] {
   for (const a of approvals) {
     map.set(`${a.token}:${a.spender}`.toLowerCase(), a);
   }
-  // Return newest first
-  return [...map.values()].sort((a, b) => b.timestamp - a.timestamp);
+  // Filter out revokes (amount=0), then return newest first
+  return [...map.values()]
+    .filter((a) => a.amount !== '0')
+    .sort((a, b) => b.timestamp - a.timestamp);
 }
 
 function padAddress(addr: string): string {

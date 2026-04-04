@@ -101,22 +101,34 @@ window.addEventListener('message', async (event: MessageEvent) => {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'GET_USER_ADDRESS') {
     // Ask the page's ethereum for the connected account
+    // Use a dedicated query mechanism that doesn't need session nonce
     const id = `addr-${Date.now()}`;
-    window.postMessage({ type: 'guardian:getAddress', nonce: sessionNonce, id }, '*');
+    window.postMessage({ type: 'guardian:getAddress', id }, '*');
+    let responded = false;
     const handler = (event: MessageEvent) => {
       if (event.data?.type === 'guardian:addressResult' && event.data?.id === id) {
         window.removeEventListener('message', handler);
-        sendResponse({ address: event.data.address ?? null });
+        if (!responded) { responded = true; sendResponse({ address: event.data.address ?? null }); }
       }
     };
     window.addEventListener('message', handler);
-    setTimeout(() => { window.removeEventListener('message', handler); sendResponse({ address: null }); }, 3000);
+    setTimeout(() => { window.removeEventListener('message', handler); if (!responded) { responded = true; sendResponse({ address: null }); } }, 3000);
     return true;
   }
   if (msg.type === 'SEND_REVOKE_TX' && msg.tx) {
-    // Forward revoke tx to page's ethereum
-    window.postMessage({ type: 'guardian:sendTx', nonce: sessionNonce, tx: msg.tx }, '*');
-    return;
+    // Forward revoke tx and wait for result
+    const id = `revoke-${Date.now()}`;
+    window.postMessage({ type: 'guardian:sendTx', id, tx: msg.tx }, '*');
+    let responded = false;
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === 'guardian:txResult' && event.data?.id === id) {
+        window.removeEventListener('message', handler);
+        if (!responded) { responded = true; sendResponse({ success: event.data.success, error: event.data.error }); }
+      }
+    };
+    window.addEventListener('message', handler);
+    setTimeout(() => { window.removeEventListener('message', handler); if (!responded) { responded = true; sendResponse({ success: false, error: 'timeout' }); } }, 30000);
+    return true;
   }
   if (msg.type === 'TIER2_UPDATE') {
     const p = msg.payload;

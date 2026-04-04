@@ -17,6 +17,9 @@ import { addTxRecord, updateTxDecision, updateTxAI, incrementScanned } from '@/c
 import { scanApprovals, clearApprovalCache } from '@/core/approval-scanner';
 import { buildRevokeTx } from '@/core/revoke-tx';
 
+/** Last known dapp tab with a wallet — used by dashboard */
+let lastDappTabId: number | undefined;
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
 
@@ -31,6 +34,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(null); // skip analysis when disabled
         return;
       }
+      if (sender.tab?.id) lastDappTabId = sender.tab.id;
       handleAnalyze(p.id, p.method, p.params, sender.tab?.id)
         .then(sendResponse)
         .catch(() => sendResponse(fallback(p.id as string)));
@@ -44,10 +48,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'SCAN_APPROVALS') {
-    // Get user address from active tab, then scan
-    getActiveTabAddress().then(async (addr) => {
+    getDappTabAddress().then(async (addr) => {
       if (!addr) {
-        sendResponse({ error: 'Connect your wallet first to scan approvals', approvals: [], address: '' });
+        sendResponse({ error: 'Connect your wallet on a dApp first, then scan.', approvals: [], address: '' });
         return;
       }
       const approvals = await scanApprovals(addr);
@@ -57,15 +60,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'REVOKE_APPROVAL' && message.approval) {
-    getActiveTabAddress().then(async (addr) => {
-      if (!addr) { sendResponse({ ok: false }); return; }
+    getDappTabAddress().then(async (addr) => {
+      if (!addr || lastDappTabId === undefined) { sendResponse({ ok: false, error: 'No dApp tab' }); return; }
       const tx = buildRevokeTx(message.approval, addr);
-      // Send revoke tx via active tab's ethereum provider
-      const tabId = await getActiveTabId();
-      if (tabId === undefined) { sendResponse({ ok: false }); return; }
-      chrome.tabs.sendMessage(tabId, { type: 'SEND_REVOKE_TX', tx });
-      await clearApprovalCache();
-      sendResponse({ ok: true });
+      // Send revoke tx and wait for result
+      chrome.tabs.sendMessage(lastDappTabId, { type: 'SEND_REVOKE_TX', tx }, (response) => {
+        if (response?.success) {
+          clearApprovalCache();
+          sendResponse({ ok: true });
+        } else {
+          sendResponse({ ok: false, error: response?.error ?? 'Revoke failed or rejected' });
+        }
+      });
     }).catch(() => sendResponse({ ok: false }));
     return true;
   }
@@ -235,16 +241,10 @@ function clearBadge(): void {
   chrome.action.setBadgeText({ text: '' });
 }
 
-async function getActiveTabId(): Promise<number | undefined> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab?.id;
-}
-
-async function getActiveTabAddress(): Promise<string | null> {
-  const tabId = await getActiveTabId();
-  if (tabId === undefined) return null;
+async function getDappTabAddress(): Promise<string | null> {
+  if (lastDappTabId === undefined) return null;
   try {
-    const response = await chrome.tabs.sendMessage(tabId, { type: 'GET_USER_ADDRESS' });
+    const response = await chrome.tabs.sendMessage(lastDappTabId, { type: 'GET_USER_ADDRESS' });
     return response?.address ?? null;
   } catch {
     return null;
