@@ -13,6 +13,7 @@ import { lookupContract } from '@/core/contract-db';
 import { buildQueryPlan, extractTargetAddress } from '@/core/query-strategy';
 import { fetchAllContext } from '@/core/context-fetcher';
 import { computeTokenFlow } from '@/core/token-flow';
+import { addTxRecord, updateTxDecision, updateTxAI, incrementScanned } from '@/core/tx-history';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
@@ -31,6 +32,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'SET_API_KEY' && typeof message.key === 'string') {
     setApiKey(message.key).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (message.type === 'TX_DECISION') {
+    const { id: txId, approved } = message as { id: string; approved: boolean };
+    updateTxDecision(txId, approved ? 'approved' : 'rejected').then(() => {
+      clearBadge();
+      sendResponse({ ok: true });
+    });
     return true;
   }
 });
@@ -71,6 +81,21 @@ async function handleAnalyze(
       ? `Verified operation on ${known.name}. ${plan.reason}`
       : `Routine transaction. ${plan.reason}`;
   }
+
+  // Persist to history + update stats
+  await addTxRecord({
+    id, timestamp: Date.now(), method,
+    summary: result.summary,
+    score: result.score,
+    riskLevel: result.riskLevel,
+    aiExplanation: result.aiExplanation,
+    decision: 'pending',
+    contractAddress: result.decoded?.contractAddress ?? '',
+  });
+  await incrementScanned(result.riskLevel === 'red');
+
+  // Badge
+  setBadge(result.riskLevel);
 
   return result;
 }
@@ -114,6 +139,7 @@ async function triggerTier2(
     if (response) {
       setCache(cacheKey, response);
       pushUpdate(tabId, tier1.id, response.score, response.explanation, response.risk_factors);
+      await updateTxAI(tier1.id, response.score, response.explanation);
     }
   } catch (error) {
     console.error('[Guardian] Tier 2 failed:', error);
@@ -148,6 +174,20 @@ function fallback(id: string): AnalysisResult {
     summary: 'Analysis failed — proceed with caution',
     decoded: null, tokenFlow: null, aiExplanation: null,
   };
+}
+
+// Badge helpers
+const BADGE_COLORS: Record<string, string> = {
+  green: '#4ade80', yellow: '#facc15', red: '#f87171',
+};
+
+function setBadge(level: string): void {
+  chrome.action.setBadgeText({ text: level === 'green' ? '' : '!' });
+  chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS[level] ?? '#888' });
+}
+
+function clearBadge(): void {
+  chrome.action.setBadgeText({ text: '' });
 }
 
 console.log('[Guardian] Service worker started');

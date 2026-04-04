@@ -38,6 +38,8 @@ function sendDecision(txId: string, approved: boolean): void {
     { type: 'guardian:decision', nonce: sessionNonce, id: txId, approved },
     '*',
   );
+  // Notify service worker for history tracking
+  chrome.runtime.sendMessage({ type: 'TX_DECISION', id: txId, approved }).catch(() => {});
 }
 
 // Listen for intercepted transactions from MAIN world
