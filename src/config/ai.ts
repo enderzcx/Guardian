@@ -7,8 +7,8 @@ export const AI_CONFIG = {
   timeoutMs: 8000,
 } as const;
 
-/** OpenAI-compatible API endpoint (Codex proxy) */
-export const OPENAI_API_URL = 'http://43.159.171.118:8080/v1/chat/completions';
+/** OpenAI-compatible API endpoint — set via chrome.storage or env */
+export const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
-/** Default API key for Codex proxy */
-export const DEFAULT_API_KEY = 'pwd';
+/** API key placeholder — user provides their own key in settings */
+export const DEFAULT_API_KEY = '';
