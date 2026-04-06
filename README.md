@@ -4,6 +4,10 @@
 
 Guardian is a Chrome extension that intercepts every EVM wallet signature request and provides independent risk analysis — before your transaction reaches the wallet.
 
+<p align="center">
+  <img src="docs/popup-preview.png" width="360" alt="Guardian popup — transaction history with risk scores" />
+</p>
+
 ## What it does
 
 When a dApp asks you to sign something, Guardian:
