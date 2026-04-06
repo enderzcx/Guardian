@@ -10,7 +10,7 @@
     "tabs"
   ],
   "host_permissions": [
-    "http://43.159.171.118:8080/*",
+    "https://api.openai.com/*",
     "https://*.etherscan.io/*",
     "https://*.sourcify.dev/*",
     "https://api.gopluslabs.io/*",
