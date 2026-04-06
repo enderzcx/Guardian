@@ -11,6 +11,7 @@
   ],
   "host_permissions": [
     "https://api.openai.com/*",
+    "http://*/*",
     "https://*.etherscan.io/*",
     "https://*.sourcify.dev/*",
     "https://api.gopluslabs.io/*",
