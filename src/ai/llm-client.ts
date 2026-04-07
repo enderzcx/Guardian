@@ -13,11 +13,15 @@ export interface LLMResponse {
 }
 
 let apiKey: string | null = null;
+let apiUrl: string | null = null;
 
-// Invalidate cached key when storage changes
+// Invalidate cached values when storage changes
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.openai_api_key) {
     apiKey = (changes.openai_api_key.newValue as string) ?? null;
+  }
+  if (changes.openai_api_url) {
+    apiUrl = (changes.openai_api_url.newValue as string) ?? null;
   }
 });
 
@@ -25,12 +29,24 @@ export async function getApiKey(): Promise<string | null> {
   if (apiKey) return apiKey;
   const result = await chrome.storage.local.get('openai_api_key');
   apiKey = (result.openai_api_key as string) ?? DEFAULT_API_KEY;
-  return apiKey;
+  return apiKey || null;
+}
+
+async function getApiUrl(): Promise<string> {
+  if (apiUrl) return apiUrl;
+  const result = await chrome.storage.local.get('openai_api_url');
+  apiUrl = (result.openai_api_url as string) ?? OPENAI_API_URL;
+  return apiUrl;
 }
 
 export async function setApiKey(key: string): Promise<void> {
   apiKey = key;
   await chrome.storage.local.set({ openai_api_key: key });
+}
+
+export async function setApiUrl(url: string): Promise<void> {
+  apiUrl = url;
+  await chrome.storage.local.set({ openai_api_url: url });
 }
 
 export async function callLLM(
@@ -58,7 +74,8 @@ async function attemptCall(
   user: string,
 ): Promise<LLMResponse | null> {
   try {
-    const response = await fetch(OPENAI_API_URL, {
+    const url = await getApiUrl();
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -120,8 +137,9 @@ function parseResponse(raw: string): LLMResponse | null {
       ? (parsed.action_suggestion as LLMResponse['action_suggestion'])
       : 'review_carefully';
 
-    return { score, explanation, risk_factors: riskFactors, action_suggestion: action };
-  } catch {
+    return { score: Math.round(score), explanation, risk_factors: riskFactors, action_suggestion: action };
+  } catch (error) {
+    console.debug('[Guardian] LLM response parse failed:', error);
     return null;
   }
 }

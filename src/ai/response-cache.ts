@@ -31,6 +31,10 @@ export function getCached(key: string): LLMResponse | null {
     return null;
   }
 
+  // LRU: re-insert to move to end (most recently used)
+  cache.delete(key);
+  cache.set(key, entry);
+
   return entry.response;
 }
 
@@ -41,12 +45,14 @@ export function setCache(key: string, response: LLMResponse): void {
     if (now - v.timestamp > CACHE_TTL_MS) cache.delete(k);
   }
 
-  // Evict oldest if still at capacity
+  // LRU eviction: delete oldest (first) entry if at capacity
   if (cache.size >= CACHE_MAX_SIZE) {
-    const firstKey = cache.keys().next().value;
-    if (firstKey !== undefined) cache.delete(firstKey);
+    const oldest = cache.keys().next();
+    if (!oldest.done) cache.delete(oldest.value);
   }
 
+  // Delete first if exists (re-insert moves to end)
+  cache.delete(key);
   cache.set(key, {
     response,
     timestamp: Date.now(),

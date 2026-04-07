@@ -13,6 +13,11 @@ export function Dashboard(): React.JSX.Element {
   const [filter, setFilter] = useState<Filter>('all');
   const [revoking, setRevoking] = useState<string | null>(null);
   const [address, setAddress] = useState('');
+  const [page, setPage] = useState(0);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmTarget, setConfirmTarget] = useState<ActiveApproval | null>(null);
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const PAGE_SIZE = 20;
 
   useEffect(() => {
     loadApprovals();
@@ -47,6 +52,7 @@ export function Dashboard(): React.JSX.Element {
         setApprovals((prev) => prev.filter((a) =>
           `${a.token}:${a.spender}`.toLowerCase() !== key.toLowerCase()
         ));
+        setSelected((prev) => { const next = new Set(prev); next.delete(key); return next; });
       } else {
         setError(response?.error ?? 'Revoke failed or was rejected');
       }
@@ -54,11 +60,32 @@ export function Dashboard(): React.JSX.Element {
       setError('Failed to send revoke transaction');
     }
     setRevoking(null);
+    setConfirmTarget(null);
+  }
+
+  async function handleBulkRevoke() {
+    setBulkConfirm(false);
+    for (const key of selected) {
+      const approval = approvals.find((a) => `${a.token}:${a.spender}`.toLowerCase() === key.toLowerCase());
+      if (approval) await handleRevoke(approval);
+    }
+    setSelected(new Set());
+  }
+
+  function toggleSelect(key: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
   }
 
   const filtered = filter === 'all'
     ? approvals
     : approvals.filter((a) => a.riskLevel === filter);
+
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const paginated = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   const counts = {
     all: approvals.length,
@@ -73,7 +100,47 @@ export function Dashboard(): React.JSX.Element {
 
       {error && <ErrorBar message={error} />}
 
-      <FilterBar filter={filter} setFilter={setFilter} counts={counts} />
+      <FilterBar filter={filter} setFilter={(f) => { setFilter(f); setPage(0); }} counts={counts} />
+
+      {selected.size > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          padding: '10px 16px', marginBottom: 12, borderRadius: 8,
+          background: '#1a1a2e', border: '1px solid #5a272744',
+        }}>
+          <span style={{ fontSize: 13, color: '#e0e0e0' }}>
+            {selected.size} selected
+          </span>
+          <button onClick={() => setBulkConfirm(true)} style={{
+            padding: '6px 16px', borderRadius: 6, border: 'none',
+            background: '#5a2727', color: '#fff', cursor: 'pointer', fontSize: 12,
+          }}>
+            Revoke Selected
+          </button>
+          <button onClick={() => setSelected(new Set())} style={{
+            padding: '6px 12px', borderRadius: 6, border: 'none',
+            background: 'transparent', color: '#888', cursor: 'pointer', fontSize: 12,
+          }}>
+            Clear
+          </button>
+        </div>
+      )}
+
+      {bulkConfirm && (
+        <ConfirmDialog
+          message={`Revoke ${selected.size} approvals? This will send ${selected.size} transactions.`}
+          onConfirm={handleBulkRevoke}
+          onCancel={() => setBulkConfirm(false)}
+        />
+      )}
+
+      {confirmTarget && (
+        <ConfirmDialog
+          message={`Revoke approval for ${confirmTarget.tokenName} → ${confirmTarget.spenderName}?`}
+          onConfirm={() => handleRevoke(confirmTarget)}
+          onCancel={() => setConfirmTarget(null)}
+        />
+      )}
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: 60, opacity: 0.4 }}>
@@ -85,14 +152,40 @@ export function Dashboard(): React.JSX.Element {
         </div>
       ) : (
         <div>
-          {filtered.map((a) => (
-            <ApprovalRow
-              key={`${a.token}:${a.spender}`}
-              approval={a}
-              onRevoke={() => handleRevoke(a)}
-              revoking={revoking === `${a.token}:${a.spender}`}
-            />
-          ))}
+          {paginated.map((a) => {
+            const key = `${a.token}:${a.spender}`;
+            return (
+              <ApprovalRow
+                key={key}
+                approval={a}
+                onRevoke={() => setConfirmTarget(a)}
+                revoking={revoking === key}
+                selected={selected.has(key)}
+                onToggleSelect={() => toggleSelect(key)}
+              />
+            );
+          })}
+          {totalPages > 1 && (
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
+              <button
+                disabled={page === 0}
+                onClick={() => setPage((p) => p - 1)}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#222240', color: '#e0e0e0', cursor: 'pointer', fontSize: 12, opacity: page === 0 ? 0.3 : 1 }}
+              >
+                Prev
+              </button>
+              <span style={{ fontSize: 12, color: '#888', lineHeight: '30px' }}>
+                {page + 1} / {totalPages}
+              </span>
+              <button
+                disabled={page >= totalPages - 1}
+                onClick={() => setPage((p) => p + 1)}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#222240', color: '#e0e0e0', cursor: 'pointer', fontSize: 12, opacity: page >= totalPages - 1 ? 0.3 : 1 }}
+              >
+                Next
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -169,8 +262,65 @@ function FilterBar({ filter, setFilter, counts }: {
   );
 }
 
-function ApprovalRow({ approval, onRevoke, revoking }: {
+function ConfirmDialog({ message, onConfirm, onCancel }: {
+  message: string; onConfirm: () => void; onCancel: () => void;
+}) {
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    document.addEventListener('keydown', handler);
+    // Focus the dialog on mount for keyboard accessibility
+    dialogRef.current?.focus();
+    return () => document.removeEventListener('keydown', handler);
+  }, [onCancel]);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Confirm revoke"
+        tabIndex={-1}
+        style={{
+          background: '#1a1a2e', borderRadius: 12, padding: '24px 28px',
+          border: '1px solid #333', maxWidth: 400, outline: 'none',
+        }}
+      >
+        <div style={{ fontSize: 14, color: '#e0e0e0', marginBottom: 20 }}>
+          {message}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onCancel} style={{
+            padding: '8px 16px', borderRadius: 6, border: 'none',
+            background: '#333', color: '#e0e0e0', cursor: 'pointer', fontSize: 13,
+          }}>
+            Cancel
+          </button>
+          <button onClick={onConfirm} style={{
+            padding: '8px 16px', borderRadius: 6, border: 'none',
+            background: '#5a2727', color: '#fff', cursor: 'pointer', fontSize: 13,
+          }}>
+            Confirm Revoke
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ApprovalRow({ approval, onRevoke, revoking, selected, onToggleSelect }: {
   approval: ActiveApproval; onRevoke: () => void; revoking: boolean;
+  selected: boolean; onToggleSelect: () => void;
 }) {
   const color = RISK_COLORS[approval.riskLevel];
   const bg = RISK_BG[approval.riskLevel];
@@ -183,6 +333,15 @@ function ApprovalRow({ approval, onRevoke, revoking }: {
       padding: '14px 16px', marginBottom: 8, borderRadius: 10,
       background: '#1a1a2e', border: `1px solid ${color}22`,
     }}>
+      {/* Select checkbox */}
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={onToggleSelect}
+        style={{ flexShrink: 0, cursor: 'pointer', accentColor: color }}
+        aria-label={`Select ${approval.tokenName} approval`}
+      />
+
       {/* Risk dot */}
       <div style={{
         width: 8, height: 8, borderRadius: '50%',

@@ -61,7 +61,8 @@ export async function checkTokenSecurity(
       ownerAddress: info.owner_address ?? '',
       isInDex: info.is_in_dex === '1',
     };
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] GoPlus checkTokenSecurity failed:', error);
     return null;
   }
 }
@@ -100,7 +101,8 @@ export async function checkAddressSecurity(
       isPhishing: r.phishing_activities === '1',
       flags,
     };
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] GoPlus checkAddressSecurity failed:', error);
     return null;
   }
 }

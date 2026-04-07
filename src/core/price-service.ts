@@ -63,7 +63,8 @@ export async function getTokenPrice(
     }
 
     return price;
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] CoinGecko price fetch failed:', error);
     return null;
   }
 }

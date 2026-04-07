@@ -71,7 +71,8 @@ function tryKnownDecode(data: string): DecodedCall | null {
       args,
       raw: data,
     };
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] ABI decode failed for data:', data.slice(0, 10), error);
     return null;
   }
 }
@@ -105,7 +106,13 @@ function formatArgValue(value: unknown, type: string): string {
  */
 export async function lookup4byte(selector: string): Promise<string | null> {
   if (!/^0x[0-9a-fA-F]{8}$/.test(selector)) return null;
-  if (selectorCache.has(selector)) return selectorCache.get(selector) ?? null;
+  const cached = selectorCache.get(selector);
+  if (cached !== undefined) {
+    // LRU: move to end
+    selectorCache.delete(selector);
+    selectorCache.set(selector, cached);
+    return cached;
+  }
 
   try {
     const url = `${FOUR_BYTE_API}?hex_signature=${encodeURIComponent(selector)}&format=json`;
@@ -122,13 +129,14 @@ export async function lookup4byte(selector: string): Promise<string | null> {
     const name = data.results[0]?.text_signature ?? null;
     if (name) {
       if (selectorCache.size >= SELECTOR_CACHE_MAX) {
-        const firstKey = selectorCache.keys().next().value;
-        if (firstKey !== undefined) selectorCache.delete(firstKey);
+        const oldest = selectorCache.keys().next();
+        if (!oldest.done) selectorCache.delete(oldest.value);
       }
       selectorCache.set(selector, name);
     }
     return name;
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] 4byte lookup failed for', selector, error);
     return null;
   }
 }

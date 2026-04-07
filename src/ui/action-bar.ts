@@ -10,6 +10,8 @@ export function createActionBar(
 ): HTMLElement {
   const colors = riskColors(level);
   const bar = document.createElement('div');
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', 'Transaction decision');
   bar.style.cssText = 'display:flex; gap:8px; margin-top:14px;';
 
   const approveLabel = level === 'red' ? 'Approve Anyway' : 'Approve';
@@ -28,6 +30,7 @@ function makeButton(
 ): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.textContent = text;
+  btn.setAttribute('aria-label', text);
   btn.style.cssText = `
     flex:1; padding:10px; border-radius:8px; background:${bg};
     color:#fff; border:none; cursor:pointer; font-size:13px;

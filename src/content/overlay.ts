@@ -17,7 +17,9 @@ function injectProviderProxy(): void {
 injectProviderProxy();
 
 let shadowRoot: ShadowRoot | null = null;
-let sessionNonce: string | null = null;
+/** Per-transaction nonces from provider-proxy */
+const txNonces = new Map<string, string>();
+const NONCE_TTL_MS = 35_000; // slightly longer than provider-proxy decision timeout
 
 function getShadowRoot(): ShadowRoot {
   if (!shadowRoot) {
@@ -32,19 +34,20 @@ function getShadowRoot(): ShadowRoot {
 }
 
 function sendDecision(txId: string, approved: boolean): void {
-  if (!sessionNonce) return;
-  // postMessage to same-page MAIN world (provider-proxy)
+  const nonce = txNonces.get(txId);
+  if (!nonce) return;
+  txNonces.delete(txId);
   window.postMessage(
-    { type: 'guardian:decision', nonce: sessionNonce, id: txId, approved },
-    '*',
+    { type: 'guardian:decision', nonce, id: txId, approved },
+    window.location.origin,
   );
-  // Notify service worker for history tracking
   chrome.runtime.sendMessage({ type: 'TX_DECISION', id: txId, approved }).catch(() => {});
 }
 
 // Listen for intercepted transactions from MAIN world
 window.addEventListener('message', async (event: MessageEvent) => {
   if (event.source !== window) return;
+  if (event.origin !== window.location.origin) return;
   const data = event.data;
   if (data?.type !== 'guardian:intercept') return;
 
@@ -57,10 +60,12 @@ window.addEventListener('message', async (event: MessageEvent) => {
     typeof data.nonce !== 'string'
   ) return;
 
-  sessionNonce = data.nonce as string;
   const { method, params, id } = payload as {
     method: string; params: unknown[]; id: string;
   };
+  txNonces.set(id, data.nonce as string);
+  // Auto-cleanup stale nonces to prevent memory leaks
+  setTimeout(() => txNonces.delete(id), NONCE_TTL_MS);
 
   let result: AnalysisResult | null;
   try {
@@ -86,10 +91,12 @@ window.addEventListener('message', async (event: MessageEvent) => {
 
   // Fallback: if AI doesn't respond in 10s, show timeout message
   if (!result.aiExplanation) {
+    const txId = id;
     setTimeout(() => {
-      const root = getShadowRoot();
-      const card = root.querySelector(`[data-guardian-tx-id="${id}"]`);
-      const aiRow = card?.querySelector('[data-guardian-ai]');
+      if (!shadowRoot) return;
+      const card = shadowRoot.querySelector(`[data-guardian-tx-id="${txId}"]`);
+      if (!card) return;
+      const aiRow = card.querySelector('[data-guardian-ai]');
       if (aiRow && aiRow.textContent === 'AI analyzing...') {
         aiRow.textContent = 'AI analysis timed out — review manually.';
       }
@@ -103,7 +110,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // Ask the page's ethereum for the connected account
     // Use a dedicated query mechanism that doesn't need session nonce
     const id = `addr-${Date.now()}`;
-    window.postMessage({ type: 'guardian:getAddress', id }, '*');
+    window.postMessage({ type: 'guardian:getAddress', id }, window.location.origin);
     let responded = false;
     const handler = (event: MessageEvent) => {
       if (event.data?.type === 'guardian:addressResult' && event.data?.id === id) {
@@ -118,7 +125,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'SEND_REVOKE_TX' && msg.tx) {
     // Forward revoke tx and wait for result
     const id = `revoke-${Date.now()}`;
-    window.postMessage({ type: 'guardian:sendTx', id, tx: msg.tx }, '*');
+    window.postMessage({ type: 'guardian:sendTx', id, tx: msg.tx }, window.location.origin);
     let responded = false;
     const handler = (event: MessageEvent) => {
       if (event.data?.type === 'guardian:txResult' && event.data?.id === id) {

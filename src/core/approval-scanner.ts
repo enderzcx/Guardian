@@ -56,32 +56,46 @@ export async function scanApprovals(
   return approvals;
 }
 
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 5;
+
+async function fetchPaginatedLogs(
+  baseUrl: string,
+  parser: (log: EtherscanLog) => ActiveApproval | null,
+): Promise<ActiveApproval[]> {
+  const all: ActiveApproval[] = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const url = `${baseUrl}&page=${page}&offset=${PAGE_SIZE}`;
+    const logs = await fetchLogs(url);
+    const parsed = logs.map(parser).filter(Boolean) as ActiveApproval[];
+    all.push(...parsed);
+    if (logs.length < PAGE_SIZE) break; // no more pages
+  }
+  return all;
+}
+
 async function fetchApprovalLogs(
   owner: string,
 ): Promise<ActiveApproval[]> {
   const paddedOwner = padAddress(owner);
-  const url = `${ETHERSCAN_API}?module=logs&action=getLogs` +
+  const baseUrl = `${ETHERSCAN_API}?module=logs&action=getLogs` +
     `&fromBlock=0&toBlock=latest` +
     `&topic0=${APPROVAL_TOPIC}` +
-    `&topic0_1_opr=and&topic1=${paddedOwner}` +
-    `&page=1&offset=1000`;
+    `&topic0_1_opr=and&topic1=${paddedOwner}`;
 
-  const logs = await fetchLogs(url);
-  return logs.map((log) => parseApprovalLog(log)).filter(Boolean) as ActiveApproval[];
+  return fetchPaginatedLogs(baseUrl, parseApprovalLog);
 }
 
 async function fetchApprovalForAllLogs(
   owner: string,
 ): Promise<ActiveApproval[]> {
   const paddedOwner = padAddress(owner);
-  const url = `${ETHERSCAN_API}?module=logs&action=getLogs` +
+  const baseUrl = `${ETHERSCAN_API}?module=logs&action=getLogs` +
     `&fromBlock=0&toBlock=latest` +
     `&topic0=${APPROVAL_FOR_ALL_TOPIC}` +
-    `&topic0_1_opr=and&topic1=${paddedOwner}` +
-    `&page=1&offset=500`;
+    `&topic0_1_opr=and&topic1=${paddedOwner}`;
 
-  const logs = await fetchLogs(url);
-  return logs.map((log) => parseApprovalForAllLog(log)).filter(Boolean) as ActiveApproval[];
+  return fetchPaginatedLogs(baseUrl, parseApprovalForAllLog);
 }
 
 interface EtherscanLog {
@@ -106,7 +120,8 @@ async function fetchLogs(url: string): Promise<EtherscanLog[]> {
 
     if (data.status !== '1' || !Array.isArray(data.result)) return [];
     return data.result;
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] Etherscan fetchLogs failed:', error);
     return [];
   }
 }
@@ -208,7 +223,8 @@ async function loadCached(address: string): Promise<ActiveApproval[] | null> {
     if (cached.address.toLowerCase() !== address.toLowerCase()) return null;
     if (Date.now() - cached.timestamp > CACHE_TTL_MS) return null;
     return cached.approvals;
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] Approval cache load failed:', error);
     return null;
   }
 }
@@ -221,7 +237,9 @@ async function saveCache(
     await chrome.storage.local.set({
       [CACHE_KEY]: { address, approvals, timestamp: Date.now() },
     });
-  } catch {}
+  } catch (error) {
+    console.debug('[Guardian] Approval cache save failed:', error);
+  }
 }
 
 export async function clearApprovalCache(): Promise<void> {

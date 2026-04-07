@@ -4,6 +4,7 @@
  */
 
 import { ETHERSCAN_API } from '@/config/endpoints';
+import { etherscanLimiter } from '@/utils/rate-limiter';
 
 export interface ContractInfo {
   verified: boolean;
@@ -64,6 +65,7 @@ async function getContractSource(
   address: string,
 ): Promise<SourceResult | null> {
   try {
+    await etherscanLimiter.acquire();
     const url = buildUrl({
       module: 'contract',
       action: 'getsourcecode',
@@ -91,7 +93,8 @@ async function getContractSource(
       contractName: result.ContractName || 'Unknown',
       sourceAvailable: hasSource,
     };
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] Etherscan getContractSource failed:', error);
     return null;
   }
 }
@@ -106,6 +109,7 @@ async function getContractCreation(
   address: string,
 ): Promise<CreationResult | null> {
   try {
+    await etherscanLimiter.acquire();
     const url = buildUrl({
       module: 'contract',
       action: 'getcontractcreation',
@@ -135,13 +139,15 @@ async function getContractCreation(
       creator: result.contractCreator,
       timestamp,
     };
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] Etherscan getContractCreation failed:', error);
     return null;
   }
 }
 
 async function getTxTimestamp(txHash: string): Promise<number | null> {
   try {
+    await etherscanLimiter.acquire();
     const url = buildUrl({
       module: 'proxy',
       action: 'eth_getTransactionByHash',
@@ -160,7 +166,7 @@ async function getTxTimestamp(txHash: string): Promise<number | null> {
 
     if (!data.result?.blockNumber) return null;
 
-    // Get block timestamp
+    await etherscanLimiter.acquire();
     const blockUrl = buildUrl({
       module: 'proxy',
       action: 'eth_getBlockByNumber',
@@ -181,7 +187,8 @@ async function getTxTimestamp(txHash: string): Promise<number | null> {
     if (!blockData.result?.timestamp) return null;
 
     return parseInt(blockData.result.timestamp, 16);
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] Etherscan getTxTimestamp failed:', error);
     return null;
   }
 }

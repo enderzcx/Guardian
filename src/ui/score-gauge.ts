@@ -11,6 +11,11 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 export function createScoreGauge(score: number, level: RiskLevel): HTMLElement {
   const colors = riskColors(level);
   const container = document.createElement('div');
+  container.setAttribute('role', 'meter');
+  container.setAttribute('aria-label', `Risk score: ${score} out of 100`);
+  container.setAttribute('aria-valuemin', '0');
+  container.setAttribute('aria-valuemax', '100');
+  container.setAttribute('aria-valuenow', String(score));
   container.style.cssText = 'position:relative; width:88px; height:88px; flex-shrink:0;';
 
   const ns = 'http://www.w3.org/2000/svg';
@@ -77,6 +82,8 @@ export function updateScoreGauge(
     progress.setAttribute('stroke-dashoffset', String(offset));
   }
   const label = container.querySelector('[data-guardian-score]');
+  container.setAttribute('aria-valuenow', String(score));
+  container.setAttribute('aria-label', `Risk score: ${score} out of 100`);
   if (label) {
     (label as HTMLElement).style.color = colors.accent;
     label.textContent = String(score);

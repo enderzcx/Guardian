@@ -32,6 +32,8 @@ export function renderCard(
     `,
   });
   card.setAttribute('data-guardian-tx-id', result.id);
+  card.setAttribute('role', 'alertdialog');
+  card.setAttribute('aria-label', `Guardian transaction review: ${result.summary}`);
 
   // Header row: badge + title + gauge
   const header = el('div', {
@@ -109,6 +111,9 @@ export function renderCard(
     cleanup();
   }));
 
+  // Make card draggable
+  makeDraggable(card);
+
   root.appendChild(card);
 
   // Entrance animation
@@ -118,6 +123,58 @@ export function renderCard(
       card.style.transform = 'translateY(0)';
     });
   });
+}
+
+function makeDraggable(card: HTMLElement): void {
+  let isDragging = false;
+  let startX = 0;
+  let startY = 0;
+  let origRight = 24;
+  let origBottom = 24;
+
+  card.style.cursor = 'grab';
+
+  const onMouseMove = (e: MouseEvent) => {
+    if (!isDragging) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    const newRight = Math.max(0, Math.min(window.innerWidth - 420, origRight - dx));
+    const newBottom = Math.max(0, Math.min(window.innerHeight - 100, origBottom - dy));
+    card.style.right = `${newRight}px`;
+    card.style.bottom = `${newBottom}px`;
+  };
+
+  const onMouseUp = () => {
+    if (isDragging) {
+      isDragging = false;
+      card.style.cursor = 'grab';
+    }
+  };
+
+  card.addEventListener('mousedown', (e: MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    isDragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    const rect = card.getBoundingClientRect();
+    origRight = window.innerWidth - rect.right;
+    origBottom = window.innerHeight - rect.bottom;
+    card.style.cursor = 'grabbing';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mouseup', onMouseUp);
+
+  // Cleanup listeners when card is removed from DOM
+  const observer = new MutationObserver(() => {
+    if (!card.isConnected) {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      observer.disconnect();
+    }
+  });
+  observer.observe(card.parentNode ?? document.body, { childList: true });
 }
 
 export function updateCardWithAI(

@@ -33,26 +33,30 @@ function isInterceptedMethod(method) {
   return INTERCEPTED_METHODS.includes(method);
 }
 
-/** Session nonce — generated once, shared only via postMessage to content script */
-const SESSION_NONCE = generateNonce();
+/** Per-transaction nonces — rotated each interception for replay protection */
+const txNonces = new Map();
 
 function waitForDecision(txId) {
   return new Promise((resolve) => {
+    const expectedNonce = txNonces.get(txId);
     const timeout = setTimeout(() => {
       window.removeEventListener('message', handler);
+      txNonces.delete(txId);
       resolve(true); // fail-open: let tx through if Guardian is unresponsive
     }, DECISION_TIMEOUT_MS);
 
     const handler = (event) => {
       if (event.source !== window) return;
+      if (event.origin !== window.location.origin) return;
       const data = event.data;
       if (
         data?.type === 'guardian:decision' &&
-        data?.nonce === SESSION_NONCE &&
+        data?.nonce === expectedNonce &&
         data?.id === txId
       ) {
         clearTimeout(timeout);
         window.removeEventListener('message', handler);
+        txNonces.delete(txId);
         resolve(Boolean(data.approved));
       }
     };
@@ -62,13 +66,15 @@ function waitForDecision(txId) {
 }
 
 function notifyContentScript(method, params, id) {
+  const nonce = generateNonce();
+  txNonces.set(id, nonce);
   window.postMessage(
     {
       type: 'guardian:intercept',
-      nonce: SESSION_NONCE,
+      nonce,
       payload: { method, params, id },
     },
-    '*'
+    window.location.origin
   );
 }
 
@@ -124,6 +130,7 @@ function init() {
   // Handle dashboard queries from content script (no nonce required for reads)
   window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
+    if (event.origin !== window.location.origin) return;
     const data = event.data;
 
     if (data?.type === 'guardian:getAddress' && data.id) {
@@ -133,9 +140,9 @@ function init() {
           type: 'guardian:addressResult',
           id: data.id,
           address: accounts?.[0] ?? null,
-        }, '*');
+        }, window.location.origin);
       } catch {
-        window.postMessage({ type: 'guardian:addressResult', id: data.id, address: null }, '*');
+        window.postMessage({ type: 'guardian:addressResult', id: data.id, address: null }, window.location.origin);
       }
     }
 
@@ -145,9 +152,9 @@ function init() {
           method: 'eth_sendTransaction',
           params: [data.tx],
         });
-        window.postMessage({ type: 'guardian:txResult', id: data.id, success: true }, '*');
+        window.postMessage({ type: 'guardian:txResult', id: data.id, success: true }, window.location.origin);
       } catch (e) {
-        window.postMessage({ type: 'guardian:txResult', id: data.id, success: false, error: e.message }, '*');
+        window.postMessage({ type: 'guardian:txResult', id: data.id, success: false, error: e.message }, window.location.origin);
       }
     }
   });

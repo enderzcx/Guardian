@@ -4,6 +4,7 @@
  */
 
 import { ETHERSCAN_API } from '@/config/endpoints';
+import { etherscanLimiter } from '@/utils/rate-limiter';
 
 export interface UserProfile {
   totalTxCount: number;
@@ -27,13 +28,16 @@ export async function getUserProfile(
   const cached = await loadCachedProfile(userAddress);
   if (cached) return buildProfile(cached);
 
-  // Fetch tx count from Etherscan
-  const txCount = await fetchTxCount(userAddress);
+  // Fetch tx count and recent contract interactions from Etherscan
+  const [txCount, contracts] = await Promise.all([
+    fetchTxCount(userAddress),
+    fetchRecentContracts(userAddress),
+  ]);
   if (txCount === null) return null;
 
   const profile: CachedProfile = {
     totalTxCount: txCount,
-    interactedContracts: [],
+    interactedContracts: contracts,
     timestamp: Date.now(),
   };
 
@@ -54,6 +58,7 @@ function buildProfile(cached: CachedProfile): UserProfile {
 
 async function fetchTxCount(address: string): Promise<number | null> {
   try {
+    await etherscanLimiter.acquire();
     const url = `${ETHERSCAN_API}?module=proxy&action=eth_getTransactionCount&address=${address}&tag=latest`;
     const response = await fetch(url, {
       signal: AbortSignal.timeout(3000),
@@ -63,8 +68,34 @@ async function fetchTxCount(address: string): Promise<number | null> {
 
     const data = (await response.json()) as { result: string };
     return parseInt(data.result, 16);
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] Etherscan fetchTxCount failed:', error);
     return null;
+  }
+}
+
+async function fetchRecentContracts(address: string): Promise<string[]> {
+  try {
+    await etherscanLimiter.acquire();
+    const url = `${ETHERSCAN_API}?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&page=1&offset=100&sort=desc`;
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) return [];
+
+    const data = (await response.json()) as {
+      status: string;
+      result: { to: string }[] | string;
+    };
+    if (data.status !== '1' || !Array.isArray(data.result)) return [];
+
+    const contracts = new Set<string>();
+    for (const tx of data.result) {
+      if (tx.to) contracts.add(tx.to.toLowerCase());
+    }
+    return [...contracts];
+  } catch {
+    return [];
   }
 }
 
@@ -78,7 +109,8 @@ async function loadCachedProfile(
     if (!cached) return null;
     if (Date.now() - cached.timestamp > CACHE_TTL_MS) return null;
     return cached;
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] Profile cache load failed:', error);
     return null;
   }
 }
@@ -90,7 +122,7 @@ async function saveCachedProfile(
   try {
     const key = `profile_${address.toLowerCase()}`;
     await chrome.storage.session.set({ [key]: profile });
-  } catch {
-    // storage.session may not be available in all contexts
+  } catch (error) {
+    console.debug('[Guardian] Profile cache save failed (storage.session may be unavailable):', error);
   }
 }

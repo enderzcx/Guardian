@@ -65,7 +65,8 @@ function decodeTypedData(params: unknown[]): DecodedInfo | null {
   let data: unknown;
   try {
     data = typeof raw === 'string' ? JSON.parse(raw as string) : raw;
-  } catch {
+  } catch (error) {
+    console.debug('[Guardian] EIP-712 JSON parse failed:', error);
     return null;
   }
   const parsed = parseEIP712(data);
@@ -105,8 +106,10 @@ function estimateRiskScore(method: string, decoded: DecodedInfo | null): number 
     score += decoded.eip712RiskFactors.length * 15;
   }
   if (method.startsWith('eth_signTypedData')) score += 10;
-  if (fn.includes('swap') && score <= 30) score = Math.min(score, 25);
-  if (fn === 'native transfer' && score <= 20) score = Math.min(score, 15);
+  // Cap low-risk swaps/transfers — but only if score is still in the low range.
+  // A swap to a malicious contract can score >30, and should NOT be capped.
+  if (fn.includes('swap') && score <= 30) score = 25;
+  if (fn === 'native transfer' && score <= 20) score = 15;
   return Math.min(score, 100);
 }
 

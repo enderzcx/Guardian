@@ -13,7 +13,7 @@ const LABELS: Record<RiskLevel, string> = {
 
 export function createRiskBadge(level: RiskLevel): HTMLElement {
   const colors = riskColors(level);
-  return el('span', {
+  const badge = el('span', {
     style: `
       display:inline-block; padding:2px 10px; border-radius:12px;
       font-size:11px; font-weight:600; letter-spacing:0.3px;
@@ -22,4 +22,7 @@ export function createRiskBadge(level: RiskLevel): HTMLElement {
     `,
     text: LABELS[level],
   });
+  badge.setAttribute('role', 'status');
+  badge.setAttribute('aria-label', `Risk level: ${LABELS[level]}`);
+  return badge;
 }
