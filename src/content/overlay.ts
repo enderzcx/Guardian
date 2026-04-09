@@ -2,6 +2,12 @@
  * Content Script — ISOLATED world
  * Listens for intercepted transactions via postMessage
  * Delegates card rendering to card-renderer.ts
+ *
+ * Security model:
+ * - Receives intercept notifications from MAIN world via postMessage (read-only)
+ * - Sends user decisions to service worker via chrome.runtime (internal channel)
+ * - Service worker resolves the MAIN world promise via chrome.scripting.executeScript
+ * - NO secrets are exchanged via postMessage — page scripts cannot forge decisions
  */
 
 import type { AnalysisResult } from '@/types';
@@ -17,18 +23,6 @@ function injectProviderProxy(): void {
 injectProviderProxy();
 
 let shadowRoot: ShadowRoot | null = null;
-/**
- * Per-transaction decision tokens — generated HERE in the ISOLATED world.
- * Page scripts in MAIN world cannot access these, preventing forgery.
- */
-const decisionTokens = new Map<string, string>();
-const TOKEN_TTL_MS = 35_000;
-
-function generateDecisionToken(): string {
-  return crypto.getRandomValues(new Uint8Array(16)).reduce(
-    (s: string, b: number) => s + b.toString(16).padStart(2, '0'), ''
-  );
-}
 
 function getShadowRoot(): ShadowRoot {
   if (!shadowRoot) {
@@ -43,15 +37,14 @@ function getShadowRoot(): ShadowRoot {
 }
 
 function sendDecision(txId: string, approved: boolean): void {
-  const token = decisionTokens.get(txId);
-  if (!token) return;
-  decisionTokens.delete(txId);
-  // decisionToken is generated in ISOLATED world — page scripts can't predict it
-  window.postMessage(
-    { type: 'guardian:decision', decisionToken: token, id: txId, approved },
-    window.location.origin,
-  );
-  chrome.runtime.sendMessage({ type: 'TX_DECISION', id: txId, approved }).catch(() => {});
+  // Decision goes through chrome.runtime (extension-only channel).
+  // Service worker will use chrome.scripting.executeScript to resolve
+  // the MAIN world promise. No postMessage = page scripts can't forge this.
+  chrome.runtime.sendMessage({
+    type: 'TX_DECISION',
+    id: txId,
+    approved,
+  }).catch(() => {});
 }
 
 // Listen for intercepted transactions from MAIN world
@@ -72,10 +65,6 @@ window.addEventListener('message', async (event: MessageEvent) => {
   const { method, params, id } = payload as {
     method: string; params: unknown[]; id: string;
   };
-  // Generate decision token in ISOLATED world — page scripts cannot see this
-  const token = generateDecisionToken();
-  decisionTokens.set(id, token);
-  setTimeout(() => decisionTokens.delete(id), TOKEN_TTL_MS);
 
   let result: AnalysisResult | null;
   try {
@@ -117,8 +106,6 @@ window.addEventListener('message', async (event: MessageEvent) => {
 // Handle Tier 2 AI updates + cleanup + dashboard queries
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'GET_USER_ADDRESS') {
-    // Ask the page's ethereum for the connected account
-    // Use a dedicated query mechanism that doesn't need session nonce
     const id = `addr-${Date.now()}`;
     window.postMessage({ type: 'guardian:getAddress', id }, window.location.origin);
     let responded = false;
@@ -133,7 +120,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'SEND_REVOKE_TX' && msg.tx) {
-    // Forward revoke tx and wait for result
     const id = `revoke-${Date.now()}`;
     window.postMessage({ type: 'guardian:sendTx', id, tx: msg.tx }, window.location.origin);
     let responded = false;

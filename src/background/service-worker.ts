@@ -84,6 +84,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'TX_DECISION') {
     const { id: txId, approved } = message as { id: string; approved: boolean };
+    const tabId = sender.tab?.id;
+    // Resolve the MAIN world promise via chrome.scripting.executeScript.
+    // This is the ONLY way to deliver the decision — page scripts cannot
+    // call chrome.scripting, making forgery impossible.
+    if (tabId !== undefined) {
+      chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: (id: string, ok: boolean) => {
+          if (typeof window.__guardianResolve === 'function') {
+            window.__guardianResolve(id, ok);
+          }
+        },
+        args: [txId, approved],
+      }).catch(() => {});
+    }
     updateTxDecision(txId, approved ? 'approved' : 'rejected').then(() => {
       clearBadge();
       sendResponse({ ok: true });
@@ -156,11 +172,13 @@ async function triggerTier2(
 ): Promise<void> {
   try {
     const contractAddr = tier1.decoded?.contractAddress ?? '';
-    // Use the 4-byte calldata selector (e.g. "0x095ea7b3") as cache key,
-    // NOT the RPC method name. Falls back to functionName for signTypedData.
+    // Cache key must be specific enough to avoid cross-tx collisions.
+    // For calldata txs: use the 4-byte selector (e.g. "0x095ea7b3").
+    // For signTypedData: include spender+amount since functionName is coarse
+    // (e.g. "Permit2 - Token Permission" is shared across all permits).
+    const args = tier1.decoded?.args ?? {};
     const selector = tier1.decoded?.selector
-      ?? tier1.decoded?.functionName
-      ?? method;
+      ?? `${tier1.decoded?.functionName ?? method}:${args.spender ?? ''}:${args.amount ?? ''}`;
     const cacheKey = buildCacheKey(contractAddr, selector);
     const cached = getCached(cacheKey);
 
