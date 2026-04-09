@@ -156,7 +156,12 @@ async function triggerTier2(
 ): Promise<void> {
   try {
     const contractAddr = tier1.decoded?.contractAddress ?? '';
-    const cacheKey = buildCacheKey(contractAddr, method.slice(0, 10));
+    // Use the 4-byte calldata selector (e.g. "0x095ea7b3") as cache key,
+    // NOT the RPC method name. Falls back to functionName for signTypedData.
+    const selector = tier1.decoded?.selector
+      ?? tier1.decoded?.functionName
+      ?? method;
+    const cacheKey = buildCacheKey(contractAddr, selector);
     const cached = getCached(cacheKey);
 
     if (cached) {

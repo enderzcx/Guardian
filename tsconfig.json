@@ -13,11 +13,10 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "outDir": "dist",
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "src/env.d.ts"],
   "exclude": ["node_modules", "dist"]
 }

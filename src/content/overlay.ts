@@ -17,9 +17,18 @@ function injectProviderProxy(): void {
 injectProviderProxy();
 
 let shadowRoot: ShadowRoot | null = null;
-/** Per-transaction nonces from provider-proxy */
-const txNonces = new Map<string, string>();
-const NONCE_TTL_MS = 35_000; // slightly longer than provider-proxy decision timeout
+/**
+ * Per-transaction decision tokens — generated HERE in the ISOLATED world.
+ * Page scripts in MAIN world cannot access these, preventing forgery.
+ */
+const decisionTokens = new Map<string, string>();
+const TOKEN_TTL_MS = 35_000;
+
+function generateDecisionToken(): string {
+  return crypto.getRandomValues(new Uint8Array(16)).reduce(
+    (s: string, b: number) => s + b.toString(16).padStart(2, '0'), ''
+  );
+}
 
 function getShadowRoot(): ShadowRoot {
   if (!shadowRoot) {
@@ -34,11 +43,12 @@ function getShadowRoot(): ShadowRoot {
 }
 
 function sendDecision(txId: string, approved: boolean): void {
-  const nonce = txNonces.get(txId);
-  if (!nonce) return;
-  txNonces.delete(txId);
+  const token = decisionTokens.get(txId);
+  if (!token) return;
+  decisionTokens.delete(txId);
+  // decisionToken is generated in ISOLATED world — page scripts can't predict it
   window.postMessage(
-    { type: 'guardian:decision', nonce, id: txId, approved },
+    { type: 'guardian:decision', decisionToken: token, id: txId, approved },
     window.location.origin,
   );
   chrome.runtime.sendMessage({ type: 'TX_DECISION', id: txId, approved }).catch(() => {});
@@ -56,16 +66,16 @@ window.addEventListener('message', async (event: MessageEvent) => {
     !payload ||
     typeof payload.method !== 'string' ||
     !Array.isArray(payload.params) ||
-    typeof payload.id !== 'string' ||
-    typeof data.nonce !== 'string'
+    typeof payload.id !== 'string'
   ) return;
 
   const { method, params, id } = payload as {
     method: string; params: unknown[]; id: string;
   };
-  txNonces.set(id, data.nonce as string);
-  // Auto-cleanup stale nonces to prevent memory leaks
-  setTimeout(() => txNonces.delete(id), NONCE_TTL_MS);
+  // Generate decision token in ISOLATED world — page scripts cannot see this
+  const token = generateDecisionToken();
+  decisionTokens.set(id, token);
+  setTimeout(() => decisionTokens.delete(id), TOKEN_TTL_MS);
 
   let result: AnalysisResult | null;
   try {

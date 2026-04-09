@@ -130,7 +130,7 @@ function parseApprovalLog(log: EtherscanLog): ActiveApproval | null {
   if (log.topics.length < 3) return null;
 
   const token = extractAddress(log.address);
-  const spender = extractAddress(log.topics[2]);
+  const spender = extractAddress(log.topics[2]!);
   const amount = log.data === '0x' ? '0' : BigInt(log.data).toString();
 
   const unlimited = isUnlimitedAmount(amount);
@@ -155,7 +155,7 @@ function parseApprovalForAllLog(log: EtherscanLog): ActiveApproval | null {
   if (log.topics.length < 3) return null;
 
   const token = extractAddress(log.address);
-  const operator = extractAddress(log.topics[2]);
+  const operator = extractAddress(log.topics[2]!);
 
   const approved = log.data !== '0x' + '0'.repeat(64);
 

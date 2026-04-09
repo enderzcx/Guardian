@@ -13,6 +13,8 @@ export interface TokenFlow {
 
 export interface DecodedInfo {
   functionName: string;
+  /** 4-byte calldata selector, e.g. "0x095ea7b3" */
+  selector?: string;
   args: Record<string, string>;
   contractAddress: string;
   value: string;
@@ -36,13 +38,12 @@ export interface AnalysisResult {
 
 export interface GuardianInterceptMessage {
   type: 'guardian:intercept';
-  nonce: string;
   payload: InterceptedTransaction;
 }
 
 export interface GuardianDecisionMessage {
   type: 'guardian:decision';
-  nonce: string;
+  decisionToken: string;
   id: string;
   approved: boolean;
 }

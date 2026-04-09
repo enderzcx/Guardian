@@ -7,6 +7,7 @@ import type { AnalysisResult, DecodedInfo } from '@/types';
 import { decodeCalldataWithLookup } from '@/core/abi-decoder';
 import { parseEIP712 } from '@/utils/eip712-parser';
 import { isTrustedContract } from '@/core/contract-db';
+import { isUnlimitedAmount } from '@/utils/format';
 
 export async function runTier1(
   id: string,
@@ -54,6 +55,7 @@ async function decodeTransaction(params: unknown[]): Promise<DecodedInfo | null>
   const decoded = await decodeCalldataWithLookup(data);
   return {
     functionName: decoded?.name ?? (txObj.to ? 'Native Transfer' : 'Contract Creation'),
+    selector: decoded?.selector,
     args: decoded?.args ?? {},
     contractAddress: txObj.to ?? '',
     value: txObj.value ?? '0x0',
@@ -99,7 +101,8 @@ function estimateRiskScore(method: string, decoded: DecodedInfo | null): number 
   if (fn.includes('setapprovalforall')) {
     score += 50;
   } else if (fn.includes('approve')) {
-    score += decoded.args.amount === 'Unlimited' ? 45 : 20;
+    const amt = decoded.args.amount ?? '';
+    score += (amt === 'Unlimited' || isUnlimitedAmount(amt)) ? 45 : 20;
   }
   if (fn.includes('permit')) score += 25;
   if (decoded.eip712RiskFactors?.length) {

@@ -16,6 +16,6 @@ export const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
 
 export type RiskLevel = 'green' | 'yellow' | 'red';
 
-export function riskColors(level: RiskLevel): typeof COLORS.green {
+export function riskColors(level: RiskLevel): { accent: string; bg: string; border: string } {
   return COLORS[level];
 }
