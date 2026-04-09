@@ -14,7 +14,7 @@ export interface LLMResponse {
 export interface GuardianUser {
   id: string;
   email: string;
-  plan: 'free' | 'paid';
+  plan: 'free' | 'pro' | 'max';
   createdAt: string;
 }
 
@@ -24,6 +24,42 @@ export interface GuardianUsage {
   remaining: number | null;
   resetAt: string;
   timezone: string;
+  period?: 'day' | 'month';
+}
+
+export interface GuardianSubscription {
+  provider: 'infini';
+  status: string;
+  plan: 'free' | 'pro' | 'max';
+  amount: string | null;
+  currency: string | null;
+  merchantSubId: string | null;
+  subscriptionId: string | null;
+  payerEmail: string | null;
+  currentPeriodStart: string | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  canceledAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface GuardianPendingCheckout {
+  plan: 'free' | 'pro' | 'max';
+  checkoutUrl: string | null;
+  merchantSubId: string | null;
+  createdAt: string | null;
+  status: string;
+}
+
+export interface GuardianBilling {
+  currentPlan: 'free' | 'pro' | 'max';
+  subscription: GuardianSubscription | null;
+  pendingCheckout: GuardianPendingCheckout | null;
+  plans: {
+    free: { quota: number; price: string };
+    pro: { quota: number; price: string };
+    max: { quota: number; price: string };
+  };
 }
 
 export interface GuardianAuthState {
@@ -31,6 +67,7 @@ export interface GuardianAuthState {
   token: string | null;
   user: GuardianUser | null;
   usage: GuardianUsage | null;
+  billing: GuardianBilling | null;
   lastError: string | null;
 }
 
@@ -44,6 +81,7 @@ interface SessionResponse {
   token: string;
   user: GuardianUser;
   usage: GuardianUsage;
+  billing?: GuardianBilling;
 }
 
 const AUTH_STORAGE_KEY = 'guardian_auth';
@@ -62,6 +100,7 @@ function guestState(message: string | null = null): GuardianAuthState {
     token: null,
     user: null,
     usage: null,
+    billing: null,
     lastError: message,
   };
 }
@@ -126,6 +165,7 @@ async function persistSession(session: SessionResponse): Promise<GuardianAuthSta
     token: session.token,
     user: session.user,
     usage: session.usage,
+    billing: session.billing ?? null,
     lastError: null,
   });
 }
@@ -188,7 +228,7 @@ export async function refreshAuthState(): Promise<GuardianAuthState> {
   const current = await getAuthState();
   if (!current.token) return current;
 
-  const response = await requestJson<{ user?: GuardianUser; usage?: GuardianUsage; error?: string }>(
+  const response = await requestJson<{ user?: GuardianUser; usage?: GuardianUsage; billing?: GuardianBilling; error?: string }>(
     '/me',
     { method: 'GET' },
     current.token,
@@ -206,6 +246,7 @@ export async function refreshAuthState(): Promise<GuardianAuthState> {
     token: current.token,
     user: response.data.user,
     usage: response.data.usage,
+    billing: response.data.billing ?? current.billing,
     lastError: null,
   });
 }
@@ -286,11 +327,11 @@ export async function callLLM(
     await saveAuthState({
       ...current,
       usage: response.data?.usage ?? current.usage,
-      lastError: response.data?.error ?? 'Daily AI limit reached',
+      lastError: response.data?.error ?? 'Monthly AI limit reached',
     });
     return {
       status: 'quota_exceeded',
-      message: response.data?.error ?? 'Daily AI limit reached',
+      message: response.data?.error ?? 'Monthly AI limit reached',
       usage: response.data?.usage ?? current.usage,
     };
   }
@@ -298,4 +339,81 @@ export async function callLLM(
   const message = response.data?.error ?? 'Guardian AI is temporarily unavailable.';
   await saveAuthState({ ...current, lastError: message });
   return { status: 'error', message };
+}
+
+export async function createCheckoutSession(plan: 'pro' | 'max'): Promise<{
+  ok: boolean;
+  checkoutUrl?: string;
+  auth: GuardianAuthState;
+  error?: string;
+}> {
+  const current = await getAuthState();
+  if (!current.token) {
+    return { ok: false, auth: current, error: 'Sign in first' };
+  }
+
+  const response = await requestJson<{
+    checkoutUrl?: string;
+    billing?: GuardianBilling;
+    error?: string;
+  }>(
+    '/billing/checkout',
+    {
+      method: 'POST',
+      body: JSON.stringify({ plan }),
+    },
+    current.token,
+  );
+
+  if (!response.ok || !response.data?.checkoutUrl) {
+    const next = await saveAuthState({
+      ...current,
+      billing: response.data?.billing ?? current.billing,
+      lastError: response.data?.error ?? 'Could not create checkout session',
+    });
+    return { ok: false, auth: next, error: next.lastError ?? 'Could not create checkout session' };
+  }
+
+  const next = await saveAuthState({
+    ...current,
+    billing: response.data.billing ?? current.billing,
+    lastError: null,
+  });
+  return { ok: true, checkoutUrl: response.data.checkoutUrl, auth: next };
+}
+
+export async function cancelSubscription(): Promise<{
+  ok: boolean;
+  auth: GuardianAuthState;
+  error?: string;
+}> {
+  const current = await getAuthState();
+  if (!current.token) {
+    return { ok: false, auth: current, error: 'Sign in first' };
+  }
+
+  const response = await requestJson<{
+    billing?: GuardianBilling;
+    error?: string;
+  }>(
+    '/billing/cancel',
+    { method: 'POST' },
+    current.token,
+  );
+
+  if (!response.ok || !response.data?.billing) {
+    const next = await saveAuthState({
+      ...current,
+      lastError: response.data?.error ?? 'Could not cancel subscription',
+    });
+    return { ok: false, auth: next, error: next.lastError ?? 'Could not cancel subscription' };
+  }
+
+  const next = await saveAuthState({
+    ...current,
+    billing: response.data.billing,
+    user: current.user ? { ...current.user, plan: response.data.billing.currentPlan } : current.user,
+    lastError: null,
+  });
+  return { ok: true, auth: next };
 }

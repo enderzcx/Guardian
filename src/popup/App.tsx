@@ -3,12 +3,18 @@ import type { TxRecord, ProtectionStats } from '@/core/tx-history';
 import type { GuardianAuthState } from '@/ai/llm-client';
 
 const RISK_COLORS = { green: '#4ade80', yellow: '#facc15', red: '#f87171' };
+const PLAN_META = {
+  free: { label: 'FREE', color: '#2d5a27', price: '$0', quota: '100 AI/month', hint: 'About 3 analyses per day' },
+  pro: { label: 'PRO', color: '#2155a4', price: '2.9 USDT', quota: '5000 AI/month', hint: 'About 166 analyses per day' },
+  max: { label: 'MAX', color: '#7a3f15', price: '9.9 USDT', quota: '20000 AI/month', hint: 'About 666 analyses per day' },
+} as const;
 
 const GUEST_AUTH: GuardianAuthState = {
   status: 'guest',
   token: null,
   user: null,
   usage: null,
+  billing: null,
   lastError: null,
 };
 
@@ -129,6 +135,42 @@ export function App(): React.JSX.Element {
     }
   };
 
+  const startCheckout = async (plan: 'pro' | 'max') => {
+    setPending(true);
+    setMessage(null);
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'CREATE_BILLING_CHECKOUT', plan });
+      if (response?.ok) {
+        if (response.auth) setAuth(response.auth as GuardianAuthState);
+        setMessage(`Opened ${PLAN_META[plan].label} checkout in a new tab.`);
+      } else {
+        setMessage((response?.error as string | undefined) ?? 'Could not open checkout.');
+      }
+    } catch {
+      setMessage('Could not open checkout.');
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const cancelPlan = async () => {
+    setPending(true);
+    setMessage(null);
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'CANCEL_BILLING_SUBSCRIPTION' });
+      if (response?.ok && response.auth) {
+        setAuth(response.auth as GuardianAuthState);
+        setMessage('Subscription cancellation requested.');
+      } else {
+        setMessage((response?.error as string | undefined) ?? 'Could not cancel subscription.');
+      }
+    } catch {
+      setMessage('Could not cancel subscription.');
+    } finally {
+      setPending(false);
+    }
+  };
+
   return (
     <div style={{ padding: 16, minHeight: 480 }}>
       <Header enabled={enabled} onToggle={toggleEnabled} onSettings={() => setShowSettings(!showSettings)} />
@@ -149,6 +191,8 @@ export function App(): React.JSX.Element {
           submitAuth={submitAuth}
           refreshAccount={refreshAccount}
           logout={logout}
+          startCheckout={startCheckout}
+          cancelPlan={cancelPlan}
           clearAll={clearAll}
           pending={pending}
           message={message ?? auth.lastError}
@@ -191,10 +235,9 @@ function Header({ enabled, onToggle, onSettings }: {
 
 function AccountBanner({ auth }: { auth: GuardianAuthState }) {
   const usage = auth.usage;
+  const currentPlan = auth.status === 'authenticated' ? auth.user?.plan ?? 'free' : 'free';
   const usageText = auth.status === 'authenticated'
-    ? usage?.remaining === null
-      ? 'Unlimited AI'
-      : `${usage?.remaining ?? 0} AI runs left today`
+    ? `${usage?.remaining ?? 0} AI runs left this month`
     : 'Sign in for AI analysis';
 
   return (
@@ -220,10 +263,10 @@ function AccountBanner({ auth }: { auth: GuardianAuthState }) {
           ...pillStyle,
           cursor: 'default',
           background: auth.status === 'authenticated'
-            ? auth.user?.plan === 'paid' ? '#2155a4' : '#2d5a27'
+            ? PLAN_META[currentPlan].color
             : '#6b4d1f',
         }}>
-          {auth.status === 'authenticated' ? auth.user?.plan?.toUpperCase() : 'GUEST'}
+          {auth.status === 'authenticated' ? PLAN_META[currentPlan].label : 'GUEST'}
         </div>
       </div>
     </div>
@@ -343,6 +386,8 @@ function Settings(props: {
   submitAuth: () => void;
   refreshAccount: () => void;
   logout: () => void;
+  startCheckout: (plan: 'pro' | 'max') => void;
+  cancelPlan: () => void;
   clearAll: () => void;
   pending: boolean;
   message: string | null;
@@ -358,6 +403,8 @@ function Settings(props: {
     submitAuth,
     refreshAccount,
     logout,
+    startCheckout,
+    cancelPlan,
     clearAll,
     pending,
     message,
@@ -371,13 +418,17 @@ function Settings(props: {
         <div style={panelStyle}>
           <div style={{ fontSize: 12, fontWeight: 700 }}>{auth.user?.email}</div>
           <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
-            Plan: {auth.user?.plan ?? 'free'}
+            Plan: {PLAN_META[auth.user?.plan ?? 'free'].label}
           </div>
           <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
-            {auth.usage?.remaining === null
-              ? 'Unlimited AI analyses available.'
-              : `${auth.usage?.remaining ?? 0} of ${auth.usage?.limit ?? 10} AI analyses left today.`}
+            {`${auth.usage?.remaining ?? 0} of ${auth.usage?.limit ?? 100} AI analyses left this month.`}
           </div>
+          {auth.billing?.subscription && (
+            <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
+              Subscription: {auth.billing.subscription.status}
+              {auth.billing.subscription.currentPeriodEnd ? ` until ${new Date(auth.billing.subscription.currentPeriodEnd).toLocaleDateString()}` : ''}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button onClick={refreshAccount} style={{ ...pillStyle, background: '#2d455a', flex: 1 }} disabled={pending}>
               Refresh
@@ -386,6 +437,15 @@ function Settings(props: {
               Log Out
             </button>
           </div>
+          {auth.billing?.subscription && auth.billing.currentPlan !== 'free' && (
+            <button
+              onClick={cancelPlan}
+              style={{ ...pillStyle, background: '#6c4a1b', width: '100%', marginTop: 10 }}
+              disabled={pending}
+            >
+              Cancel Renewal
+            </button>
+          )}
         </div>
       ) : (
         <div style={panelStyle}>
@@ -438,10 +498,82 @@ function Settings(props: {
         </div>
       )}
 
+      <div style={{ fontSize: 12, fontWeight: 600, marginTop: 18, marginBottom: 12, opacity: 0.6 }}>PLANS</div>
+      <PlansPanel auth={auth} pending={pending} onCheckout={startCheckout} />
+
       <div style={{ fontSize: 12, fontWeight: 600, marginTop: 18, marginBottom: 12, opacity: 0.6 }}>DATA</div>
       <button onClick={clearAll} style={{ ...pillStyle, background: '#5a2727', width: '100%' }}>
         Clear History
       </button>
+    </div>
+  );
+}
+
+function PlansPanel(props: {
+  auth: GuardianAuthState;
+  pending: boolean;
+  onCheckout: (plan: 'pro' | 'max') => void;
+}) {
+  const { auth, pending, onCheckout } = props;
+  const currentPlan = auth.billing?.currentPlan ?? auth.user?.plan ?? 'free';
+  const pendingCheckoutPlan = auth.billing?.pendingCheckout?.plan ?? null;
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      {(['free', 'pro', 'max'] as const).map((plan) => (
+        <div
+          key={plan}
+          style={{
+            ...panelStyle,
+            borderColor: currentPlan === plan ? `${PLAN_META[plan].color}aa` : 'rgba(255,255,255,0.08)',
+            background: currentPlan === plan
+              ? 'linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03))'
+              : panelStyle.background,
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#fff' }}>{PLAN_META[plan].label}</div>
+              <div style={{ fontSize: 11, opacity: 0.75, marginTop: 2 }}>{PLAN_META[plan].quota}</div>
+            </div>
+            <div style={{ ...pillStyle, background: PLAN_META[plan].color, cursor: 'default' }}>
+              {PLAN_META[plan].price}
+            </div>
+          </div>
+          <div style={{ fontSize: 10, opacity: 0.55, marginTop: 8 }}>
+            {PLAN_META[plan].hint}
+          </div>
+          <div style={{ marginTop: 10 }}>
+            {currentPlan === plan ? (
+              <div style={{ fontSize: 10, opacity: 0.8, color: '#d6e7ff' }}>
+                Current plan
+              </div>
+            ) : plan === 'free' ? (
+              <div style={{ fontSize: 10, opacity: 0.45 }}>
+                Included by default
+              </div>
+            ) : (
+              <button
+                onClick={() => onCheckout(plan)}
+                disabled={pending || currentPlan !== 'free'}
+                style={{
+                  ...pillStyle,
+                  width: '100%',
+                  background: currentPlan === 'free' ? PLAN_META[plan].color : '#3b3b46',
+                  opacity: pending || currentPlan !== 'free' ? 0.65 : 1,
+                }}
+              >
+                {pendingCheckoutPlan === plan ? 'Resume Checkout' : `Choose ${PLAN_META[plan].label}`}
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+      <div style={{ fontSize: 10, opacity: 0.5 }}>
+        {currentPlan === 'free'
+          ? 'Checkout opens in a new tab. After payment, return here and tap refresh.'
+          : 'Plan switching will come after the first Infini billing flow is live.'}
+      </div>
     </div>
   );
 }

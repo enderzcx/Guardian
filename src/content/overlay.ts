@@ -13,10 +13,8 @@
 import type { AnalysisResult } from '@/types';
 import { renderCard, updateCardWithAI } from './card-renderer';
 
-// Ask the service worker to inject the MAIN-world proxy through chrome.scripting.
-chrome.runtime.sendMessage({ type: 'ENSURE_PROVIDER_PROXY' }).catch(() => {});
-
 let shadowRoot: ShadowRoot | null = null;
+let registeredDecisionEvent: string | null = null;
 
 function getShadowRoot(): ShadowRoot {
   if (!shadowRoot) {
@@ -24,7 +22,8 @@ function getShadowRoot(): ShadowRoot {
     host.id = 'guardian-overlay-host';
     host.style.cssText =
       'position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;pointer-events:none;';
-    document.body.appendChild(host);
+    const mountTarget = document.body ?? document.documentElement;
+    mountTarget.appendChild(host);
     shadowRoot = host.attachShadow({ mode: 'closed' });
   }
   return shadowRoot;
@@ -38,11 +37,35 @@ function sendDecision(txId: string, approved: boolean): void {
   }).catch(() => {});
 }
 
+function registerDecisionEvent(decisionEvent: string): void {
+  if (!decisionEvent || registeredDecisionEvent === decisionEvent) return;
+  registeredDecisionEvent = decisionEvent;
+  chrome.runtime.sendMessage({
+    type: 'REGISTER_DECISION_EVENT',
+    decisionEvent,
+  }).catch(() => {});
+}
+
+function requestMainHandshake(): void {
+  window.postMessage({ type: 'guardian:handshake-request' }, window.location.origin);
+}
+
+requestMainHandshake();
+setTimeout(requestMainHandshake, 250);
+window.addEventListener('DOMContentLoaded', requestMainHandshake, { once: true });
+
 // Listen for intercepted transactions from MAIN world
 window.addEventListener('message', async (event: MessageEvent) => {
   if (event.source !== window) return;
   if (event.origin !== window.location.origin) return;
   const data = event.data;
+  if (data?.type === 'guardian:main-ready') {
+    const decisionEvent = data.payload?.decisionEvent;
+    if (typeof decisionEvent === 'string' && decisionEvent) {
+      registerDecisionEvent(decisionEvent);
+    }
+    return;
+  }
   if (data?.type !== 'guardian:intercept') return;
 
   const payload = data.payload;

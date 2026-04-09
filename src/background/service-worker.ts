@@ -8,14 +8,16 @@ import type { AnalysisResult } from '@/types';
 import { runTier1 } from '@/core/tier1-analyzer';
 import { buildPrompt, type PromptContext } from '@/ai/prompt-builder';
 import {
+  cancelSubscription,
   callLLM,
+  createCheckoutSession,
   loginAccount,
   logoutAccount,
   refreshAuthState,
   refreshUsage,
   registerAccount,
 } from '@/ai/llm-client';
-import { buildCacheKey, getCached, setCache } from '@/ai/response-cache';
+import { buildCacheKey } from '@/ai/response-cache';
 import { lookupContract } from '@/core/contract-db';
 import { buildQueryPlan, extractTargetAddress } from '@/core/query-strategy';
 import { fetchAllContext } from '@/core/context-fetcher';
@@ -28,205 +30,15 @@ interface ProviderLike {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
 }
 
-interface MainWorldState {
-  initialized: boolean;
-  decisionEvent: string;
-  wrappedProviders: WeakSet<object>;
-}
-
-type MainWorldWindow = Window & typeof globalThis & {
-  ethereum?: ProviderLike;
-  __guardianMainWorldState?: MainWorldState;
-  __guardianEip6963Bound?: boolean;
-  __guardianMessageBridgeBound?: boolean;
-};
-
 /** Last known dapp tab with a wallet - used by dashboard */
 let lastDappTabId: number | undefined;
 const decisionEventByTab = new Map<number, string>();
 
-function getDecisionEventName(tabId: number): string {
-  const existing = decisionEventByTab.get(tabId);
-  if (existing) return existing;
-  const generated = `guardian:resolve:${crypto.randomUUID()}`;
-  decisionEventByTab.set(tabId, generated);
-  return generated;
-}
-
-async function ensureProviderProxy(tabId: number): Promise<void> {
-  const decisionEventName = getDecisionEventName(tabId);
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    world: 'MAIN',
-    args: [decisionEventName],
-    func: (decisionEvent: string) => {
-      const w = window as MainWorldWindow;
-      if (w.__guardianMainWorldState?.initialized && w.__guardianMainWorldState.decisionEvent === decisionEvent) {
-        return;
-      }
-
-      const INTERCEPTED_METHODS = [
-        'eth_sendTransaction',
-        'eth_signTypedData_v4',
-        'eth_signTypedData_v3',
-        'eth_signTypedData',
-      ];
-      const DECISION_TIMEOUT_MS = 30_000;
-      const state: MainWorldState = w.__guardianMainWorldState ?? {
-        initialized: false,
-        decisionEvent,
-        wrappedProviders: new WeakSet<object>(),
-      };
-      state.initialized = true;
-      state.decisionEvent = decisionEvent;
-      w.__guardianMainWorldState = state;
-
-      function getSafeEventApis(): {
-        add: (type: string, listener: EventListenerOrEventListenerObject) => void;
-        remove: (type: string, listener: EventListenerOrEventListenerObject) => void;
-      } {
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        (document.documentElement ?? document.body)?.appendChild(iframe);
-        const safeWindow = iframe.contentWindow as (Window & typeof globalThis) | null;
-        const SafeEventTarget = safeWindow?.EventTarget;
-        const add = SafeEventTarget
-          ? SafeEventTarget.prototype.addEventListener.bind(window) as (type: string, listener: EventListenerOrEventListenerObject) => void
-          : window.addEventListener.bind(window);
-        const remove = SafeEventTarget
-          ? SafeEventTarget.prototype.removeEventListener.bind(window) as (type: string, listener: EventListenerOrEventListenerObject) => void
-          : window.removeEventListener.bind(window);
-        iframe.remove();
-        return { add, remove };
-      }
-
-      const safeEvents = getSafeEventApis();
-
-      function generateId(): string {
-        return `g-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      }
-
-      function isInterceptedMethod(method: string): boolean {
-        return INTERCEPTED_METHODS.includes(method);
-      }
-
-      function waitForDecision(txId: string): Promise<boolean> {
-        return new Promise((resolve) => {
-          const handler = (event: Event) => {
-            const detail = (event as CustomEvent<{ txId?: string; approved?: boolean }>).detail;
-            if (detail?.txId !== txId) return;
-            clearTimeout(timeout);
-            safeEvents.remove(decisionEvent, handler);
-            resolve(Boolean(detail.approved));
-          };
-
-          const timeout = setTimeout(() => {
-            safeEvents.remove(decisionEvent, handler);
-            resolve(true);
-          }, DECISION_TIMEOUT_MS);
-
-          safeEvents.add(decisionEvent, handler);
-        });
-      }
-
-      function notifyContentScript(method: string, params: unknown[], id: string): void {
-        window.postMessage(
-          { type: 'guardian:intercept', payload: { method, params, id } },
-          window.location.origin,
-        );
-      }
-
-      function wrapProvider(provider: ProviderLike): void {
-        if (state.wrappedProviders.has(provider)) return;
-        state.wrappedProviders.add(provider);
-
-        const originalRequest = provider.request.bind(provider);
-        provider.request = async (args: { method: string; params?: unknown[] }) => {
-          if (!isInterceptedMethod(args.method)) {
-            return originalRequest(args);
-          }
-
-          const txId = generateId();
-          notifyContentScript(args.method, args.params ?? [], txId);
-
-          const approved = await waitForDecision(txId);
-          if (!approved) {
-            throw new Error('Guardian: Transaction rejected by user');
-          }
-
-          return originalRequest(args);
-        };
-      }
-
-      if (w.ethereum) {
-        wrapProvider(w.ethereum);
-      }
-
-      const descriptor = Object.getOwnPropertyDescriptor(window, 'ethereum');
-      if (!descriptor || descriptor.configurable) {
-        let currentProvider = w.ethereum;
-        Object.defineProperty(window, 'ethereum', {
-          get: () => currentProvider,
-          set: (newProvider) => {
-            currentProvider = newProvider as ProviderLike | undefined;
-            if (currentProvider) {
-              wrapProvider(currentProvider);
-            }
-          },
-          configurable: true,
-        });
-      }
-
-      if (!w.__guardianEip6963Bound) {
-        window.addEventListener('eip6963:announceProvider', (event: Event) => {
-          const detail = (event as CustomEvent<{ provider?: ProviderLike }>).detail;
-          if (detail?.provider) {
-            wrapProvider(detail.provider);
-          }
-        });
-        w.__guardianEip6963Bound = true;
-      }
-
-      if (!w.__guardianMessageBridgeBound) {
-        window.addEventListener('message', async (event: MessageEvent) => {
-          if (event.source !== window) return;
-          if (event.origin !== window.location.origin) return;
-          const data = event.data;
-
-          if (data?.type === 'guardian:getAddress' && data.id) {
-            try {
-              const accounts = await w.ethereum?.request({ method: 'eth_accounts' }) as string[] | undefined;
-              window.postMessage({
-                type: 'guardian:addressResult',
-                id: data.id,
-                address: accounts?.[0] ?? null,
-              }, window.location.origin);
-            } catch {
-              window.postMessage({ type: 'guardian:addressResult', id: data.id, address: null }, window.location.origin);
-            }
-          }
-
-          if (data?.type === 'guardian:sendTx' && data.id && data.tx) {
-            try {
-              await w.ethereum?.request({
-                method: 'eth_sendTransaction',
-                params: [data.tx],
-              });
-              window.postMessage({ type: 'guardian:txResult', id: data.id, success: true }, window.location.origin);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : 'Unknown error';
-              window.postMessage({ type: 'guardian:txResult', id: data.id, success: false, error: message }, window.location.origin);
-            }
-          }
-        });
-        w.__guardianMessageBridgeBound = true;
-      }
-    },
-  });
-}
-
 async function resolveTxDecision(tabId: number, txId: string, approved: boolean): Promise<void> {
-  const decisionEventName = getDecisionEventName(tabId);
+  const decisionEventName = decisionEventByTab.get(tabId);
+  if (!decisionEventName) {
+    throw new Error(`Missing decision event for tab ${tabId}`);
+  }
   await chrome.scripting.executeScript({
     target: { tabId },
     world: 'MAIN',
@@ -253,15 +65,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
   if (sender.tab?.id !== undefined) lastDappTabId = sender.tab.id;
 
-  if (message.type === 'ENSURE_PROVIDER_PROXY') {
+  if (message.type === 'REGISTER_DECISION_EVENT') {
     const tabId = sender.tab?.id;
-    if (tabId === undefined) {
-      sendResponse({ ok: false });
-      return true;
+    if (tabId !== undefined && typeof message.decisionEvent === 'string' && message.decisionEvent) {
+      decisionEventByTab.set(tabId, message.decisionEvent);
     }
-    ensureProviderProxy(tabId)
-      .then(() => sendResponse({ ok: true }))
-      .catch(() => sendResponse({ ok: false }));
+    sendResponse({ ok: true });
     return true;
   }
 
@@ -298,13 +107,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'CREATE_BILLING_CHECKOUT' && (message.plan === 'pro' || message.plan === 'max')) {
+    createCheckoutSession(message.plan).then(async (result) => {
+      if (result.ok && result.checkoutUrl) {
+        await chrome.tabs.create({ url: result.checkoutUrl });
+      }
+      sendResponse(result);
+    });
+    return true;
+  }
+
+  if (message.type === 'CANCEL_BILLING_SUBSCRIPTION') {
+    cancelSubscription().then(sendResponse);
+    return true;
+  }
+
   if (message.type === 'GET_AUTH_STATE') {
     refreshAuthState().then((auth) => sendResponse({ ok: true, auth }));
     return true;
   }
 
   if (message.type === 'REFRESH_AUTH_STATE') {
-    refreshUsage().then((auth) => sendResponse({ ok: true, auth }));
+    refreshAuthState().then((auth) => sendResponse({ ok: true, auth }));
     return true;
   }
 
@@ -370,10 +194,6 @@ async function handleAnalyze(
   params: unknown[],
   tabId: number | undefined,
 ): Promise<AnalysisResult> {
-  const activeTabId = tabId ?? lastDappTabId;
-  if (activeTabId !== undefined) {
-    await ensureProviderProxy(activeTabId).catch(() => {});
-  }
   const result = await runTier1(id, method, params);
 
   const known = lookupContract(result.decoded?.contractAddress ?? '');
@@ -433,14 +253,6 @@ async function triggerTier2(
     const selector = tier1.decoded?.selector
       ?? `${tier1.decoded?.functionName ?? method}:${args.spender ?? ''}:${args.amount ?? ''}`;
     const cacheKey = buildCacheKey(contractAddr, selector);
-    const cached = getCached(cacheKey);
-
-    if (cached) {
-      pushUpdate(tabId, tier1.id, cached.score, cached.explanation, cached.risk_factors);
-      await updateTxAI(tier1.id, cached.score, cached.explanation);
-      setBadge(cached.score <= 30 ? 'green' : cached.score <= 70 ? 'yellow' : 'red');
-      return;
-    }
 
     const spenderAddr = extractTargetAddress(tier1.decoded?.args ?? {});
     const userAddr = extractUserAddress(method, params);
@@ -460,7 +272,6 @@ async function triggerTier2(
     const response = await callLLM(cacheKey, system, userPrompt);
 
     if (response.status === 'ok') {
-      setCache(cacheKey, response.response);
       pushUpdate(tabId, tier1.id, response.response.score, response.response.explanation, response.response.risk_factors);
       await updateTxAI(tier1.id, response.response.score, response.response.explanation);
       const newLevel = response.response.score <= 30 ? 'green' : response.response.score <= 70 ? 'yellow' : 'red';
@@ -471,7 +282,7 @@ async function triggerTier2(
     const fallbackExplanation = response.status === 'unauthenticated'
       ? 'Sign in to unlock AI analysis.'
       : response.status === 'quota_exceeded'
-        ? 'Daily AI limit reached. Free users get 10 AI analyses per day.'
+        ? 'Monthly AI limit reached for your current plan.'
         : response.message;
     pushUpdate(tabId, tier1.id, tier1.score, fallbackExplanation, []);
     await updateTxAI(tier1.id, tier1.score, fallbackExplanation);
