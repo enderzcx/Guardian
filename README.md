@@ -22,76 +22,142 @@ A dApp says "transfer" but the calldata is `approve(unlimited)`? Guardian catche
 ## Architecture
 
 ```
-dApp → provider-proxy (intercept) → ABI decode → Tier 1 heuristic score
-                                                       ↓
-                                               Tier 2 AI analysis (LLM)
-                                               + GoPlus threat intel
-                                               + Etherscan contract info
-                                                       ↓
-                                               Risk card → user decides
+dApp page
+  ↓  wallet request
+MAIN world interceptor (injected via chrome.scripting)
+  ↓  postMessage
+Content script (ISOLATED world)
+  ↓  chrome.runtime
+Service worker
+  ├── Tier 1: ABI decode + heuristic score (<200ms, local)
+  ├── Tier 2: AI analysis via Guardian API (1-3s, async)
+  │     ├── GoPlus threat intel
+  │     ├── Etherscan contract info
+  │     └── User history context
+  ↓
+Risk card (Shadow DOM overlay) → user approves / rejects
+  ↓  chrome.scripting.executeScript
+MAIN world: resolve/reject the original wallet request
 ```
 
-**Tier 1** (<200ms, local): ABI decode, EIP-712 pattern matching, token flow, heuristic scoring.
+### Security model
 
-**Tier 2** (1-3s, async): LLM explanation with contract context, threat flags, user history.
+The decision channel is **unforgeable by page scripts**:
+
+- MAIN world interceptor is injected via `chrome.scripting.executeScript` (no `web_accessible_resources`)
+- Each tab gets a unique private `CustomEvent` name (`guardian:resolve:<UUID>`)
+- User decisions flow: content script → service worker → `chrome.scripting.executeScript` dispatches the private event
+- Anti-monkey-patch: uses hidden iframe to obtain pristine `EventTarget` APIs
+- Page scripts cannot predict the event name, cannot call `chrome.scripting`, and cannot intercept `chrome.runtime` messages
+
+### Backend architecture
+
+```
+Guardian Extension
+  → Guardian API (auth, quota, caching)
+    → codex-proxy (internal AI gateway)
+      → upstream model (GPT-5.4-mini)
+```
+
+- Extension never holds API keys — only a session JWT
+- Free tier: 10 AI analyses/day, paid: unlimited
+- Server-side response cache + in-flight dedup (no double-charging)
+- Tier 1 local analysis always available, even without login
 
 ## Risk detection
 
 | Pattern | Detection |
 |---------|-----------|
+| `approve(MAX_UINT256)` | Detected as unlimited, +45 score |
 | `setApprovalForAll` | +50 score, red card |
-| `approve(unlimited)` | +45 score |
-| Permit2 batch approval | EIP-712 parser identifies multi-token permit |
+| Permit2 batch approval | EIP-712 parser, pattern-specific risk factors |
 | Honeypot / phishing address | GoPlus API cross-check |
-| Unknown contract calling auth functions | Always triggers AI analysis |
+| Unverified contract | Etherscan source check + contract age |
+| Unknown function calling auth | Always triggers AI |
+
+## Features
+
+- **Transaction interception** — wraps `window.ethereum.request()` + EIP-6963 providers
+- **ABI decoding** — known fragments + 4byte.directory fallback
+- **EIP-712 parsing** — Permit, Permit2, DAI permit, order signatures
+- **Heuristic scoring** — local, instant, no network
+- **AI analysis** — LLM explanation with full context (contract info, threat intel, user profile)
+- **Approval dashboard** — scan active approvals, filter by risk, batch revoke
+- **Token flow** — shows what goes out and what comes in, with USD values
+- **User accounts** — register/login, free 10/day, paid unlimited
+- **Accessibility** — ARIA roles on card, gauge, badge, action bar
+- **Draggable card** — reposition the overlay card, boundary clamped
 
 ## Setup
 
 ```bash
-# Install
 npm install
-
-# Dev (hot reload)
-npm run dev
-
-# Build
-npm run build
+npm run dev      # hot reload
+npm run build    # production build
 ```
 
-Load the `dist/` folder as an unpacked extension in `chrome://extensions`.
+Load `dist/` as unpacked extension in `chrome://extensions`.
 
-### API configuration
+### Guardian API (self-hosted backend)
 
-Guardian needs an OpenAI-compatible API endpoint for Tier 2 AI analysis.
+```bash
+cd server
 
-Create `.env.local` in the project root:
+# Configure
+cp .env.example .env
+# Edit .env: set JWT secret, codex-proxy URL/key, etc.
 
+# Run
+node index.mjs
+# Or with pm2:
+pm2 start ecosystem.config.cjs
 ```
-VITE_OPENAI_API_URL=https://api.openai.com/v1/chat/completions
-VITE_OPENAI_API_KEY=sk-your-key-here
-```
 
-Or set it in the extension popup settings after install.
+The extension defaults to `https://enderzcxai.duckdns.org/guardian` — override with `VITE_GUARDIAN_API_URL` in `.env.local`.
 
 ## Project structure
 
 ```
 src/
-├── inject/       # provider-proxy — intercepts wallet requests
-├── core/         # ABI decoder, risk analyzer, approval scanner
-├── ai/           # LLM client, prompt builder
-├── intel/        # GoPlus, Etherscan, 4byte, price service
-├── background/   # service worker — orchestration pipeline
+├── background/   # service worker — orchestration + MAIN world injection
 ├── content/      # card renderer (Shadow DOM overlay)
+├── core/         # ABI decoder, tier1 analyzer, approval scanner, user profile
+├── ai/           # Guardian API client, prompt builder, response cache
+├── intel/        # GoPlus, Etherscan, 4byte, price service
 ├── ui/           # ScoreGauge, RiskBadge, TokenFlow, ActionBar
-├── popup/        # extension popup (React)
-├── dashboard/    # approval management dashboard
-└── config/       # AI config, contract database
+├── popup/        # extension popup — login/register + history (React)
+├── dashboard/    # approval management dashboard (React)
+├── utils/        # formatting, EIP-712 parser, rate limiter
+└── config/       # AI config, endpoints, contract database
+server/
+└── index.mjs     # Guardian API backend (auth, quota, AI proxy)
+test/
+├── smoke-extension.mjs  # Playwright e2e smoke
+└── smoke-ai.mjs         # AI pipeline smoke test
 ```
 
 ## Tech stack
 
-MV3 Chrome Extension + Vite + CRXJS + React + TypeScript + ethers.js
+- **Extension**: MV3 + Vite + CRXJS + React + TypeScript + ethers.js
+- **Backend**: Node.js (zero dependencies, stdlib only)
+- **AI**: GPT-5.4-mini via OpenAI-compatible proxy
+- **Intel**: GoPlus Security API + Etherscan + CoinGecko + 4byte.directory
+
+## Stats
+
+~5000 lines extension + ~500 lines backend, 35+ source files, 8 commits on main.
+
+## Roadmap
+
+- [x] Stage 0-6: Core extension (intercept, decode, score, AI, UI, e2e)
+- [x] Security hardening (decision channel, cache, scoring)
+- [x] Auth system + Guardian API backend
+- [x] VPS deployment
+- [ ] Landing page
+- [ ] Chrome Web Store publish
+- [ ] Infini payment integration
+- [ ] Multi-chain support
+- [ ] Full AI Native wallet (Phase 2)
 
 ## License
 
