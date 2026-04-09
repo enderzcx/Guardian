@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit --skipLibCheck && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "api": "node server/index.mjs"
   },
   "author": "0xEnder",
   "license": "MIT",

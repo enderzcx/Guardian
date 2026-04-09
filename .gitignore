@@ -3,5 +3,6 @@ dist/
 *.log
 .env
 .env.local
+server-data/
 PROPOSAL.md
 截图/

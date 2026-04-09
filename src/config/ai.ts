@@ -8,17 +8,8 @@ export const AI_CONFIG = {
 } as const;
 
 /**
- * OpenAI-compatible API endpoint.
- * Production builds use https://api.openai.com; local dev can override via VITE_OPENAI_API_URL.
- * User can also set a custom endpoint at runtime via the popup settings.
+ * Guardian API endpoint.
+ * Production builds should point at your hosted Guardian backend.
  */
-export const OPENAI_API_URL =
-  import.meta.env.VITE_OPENAI_API_URL ?? 'https://api.openai.com/v1/chat/completions';
-
-/**
- * Default API key — empty in production builds.
- * Users must configure their own key via popup settings.
- * Only set via VITE_OPENAI_API_KEY in local dev for convenience.
- */
-export const DEFAULT_API_KEY =
-  import.meta.env.VITE_OPENAI_API_KEY ?? '';
+export const GUARDIAN_API_URL =
+  import.meta.env.VITE_GUARDIAN_API_URL ?? 'https://enderzcxai.duckdns.org/guardian';

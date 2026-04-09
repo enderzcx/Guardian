@@ -1,9 +1,8 @@
 /**
- * LLM Client — calls GPT-5.4-mini for transaction analysis
- * Handles API calls, single retry with backoff, and response parsing
+ * Guardian API client — authenticated AI calls + local auth state cache
  */
 
-import { AI_CONFIG, OPENAI_API_URL, DEFAULT_API_KEY } from '@/config/ai';
+import { GUARDIAN_API_URL } from '@/config/ai';
 
 export interface LLMResponse {
   score: number;
@@ -12,134 +11,291 @@ export interface LLMResponse {
   action_suggestion: 'approve' | 'set_exact_amount' | 'review_carefully' | 'reject';
 }
 
-let apiKey: string | null = null;
-let apiUrl: string | null = null;
+export interface GuardianUser {
+  id: string;
+  email: string;
+  plan: 'free' | 'paid';
+  createdAt: string;
+}
 
-// Invalidate cached values when storage changes
+export interface GuardianUsage {
+  limit: number | null;
+  used: number;
+  remaining: number | null;
+  resetAt: string;
+  timezone: string;
+}
+
+export interface GuardianAuthState {
+  status: 'guest' | 'authenticated';
+  token: string | null;
+  user: GuardianUser | null;
+  usage: GuardianUsage | null;
+  lastError: string | null;
+}
+
+export type LLMCallResult =
+  | { status: 'ok'; response: LLMResponse; usage: GuardianUsage; cached: boolean }
+  | { status: 'unauthenticated'; message: string }
+  | { status: 'quota_exceeded'; message: string; usage: GuardianUsage | null }
+  | { status: 'error'; message: string };
+
+interface SessionResponse {
+  token: string;
+  user: GuardianUser;
+  usage: GuardianUsage;
+}
+
+const AUTH_STORAGE_KEY = 'guardian_auth';
+
+let authState: GuardianAuthState | null = null;
+
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes.openai_api_key) {
-    apiKey = (changes.openai_api_key.newValue as string) ?? null;
-  }
-  if (changes.openai_api_url) {
-    apiUrl = (changes.openai_api_url.newValue as string) ?? null;
+  if (changes[AUTH_STORAGE_KEY]) {
+    authState = (changes[AUTH_STORAGE_KEY].newValue as GuardianAuthState | null) ?? null;
   }
 });
 
-export async function getApiKey(): Promise<string | null> {
-  if (apiKey) return apiKey;
-  const result = await chrome.storage.local.get('openai_api_key');
-  apiKey = (result.openai_api_key as string) ?? DEFAULT_API_KEY;
-  return apiKey || null;
+function guestState(message: string | null = null): GuardianAuthState {
+  return {
+    status: 'guest',
+    token: null,
+    user: null,
+    usage: null,
+    lastError: message,
+  };
 }
 
-async function getApiUrl(): Promise<string> {
-  if (apiUrl) return apiUrl;
-  const result = await chrome.storage.local.get('openai_api_url');
-  apiUrl = (result.openai_api_url as string) ?? OPENAI_API_URL;
-  return apiUrl;
+function baseUrl(): string {
+  return GUARDIAN_API_URL.replace(/\/+$/, '');
 }
 
-export async function setApiKey(key: string): Promise<void> {
-  apiKey = key;
-  await chrome.storage.local.set({ openai_api_key: key });
+function apiUrl(path: string): string {
+  return `${baseUrl()}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
-export async function setApiUrl(url: string): Promise<void> {
-  apiUrl = url;
-  await chrome.storage.local.set({ openai_api_url: url });
+async function saveAuthState(next: GuardianAuthState): Promise<GuardianAuthState> {
+  authState = next;
+  await chrome.storage.local.set({ [AUTH_STORAGE_KEY]: next });
+  return next;
+}
+
+export async function clearAuthState(): Promise<GuardianAuthState> {
+  const next = guestState();
+  authState = next;
+  await chrome.storage.local.set({ [AUTH_STORAGE_KEY]: next });
+  return next;
+}
+
+export async function getAuthState(): Promise<GuardianAuthState> {
+  if (authState) return authState;
+  const result = await chrome.storage.local.get(AUTH_STORAGE_KEY);
+  authState = (result[AUTH_STORAGE_KEY] as GuardianAuthState | undefined) ?? guestState();
+  return authState;
+}
+
+async function requestJson<T>(
+  path: string,
+  init: RequestInit = {},
+  token?: string | null,
+): Promise<{ ok: boolean; status: number; data: T | null }> {
+  try {
+    const response = await fetch(apiUrl(path), {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init.headers ?? {}),
+      },
+    });
+
+    const text = await response.text();
+    return {
+      ok: response.ok,
+      status: response.status,
+      data: text ? JSON.parse(text) as T : null,
+    };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
+}
+
+async function persistSession(session: SessionResponse): Promise<GuardianAuthState> {
+  return saveAuthState({
+    status: 'authenticated',
+    token: session.token,
+    user: session.user,
+    usage: session.usage,
+    lastError: null,
+  });
+}
+
+export async function registerAccount(email: string, password: string): Promise<{
+  ok: boolean;
+  auth: GuardianAuthState;
+  error?: string;
+}> {
+  const response = await requestJson<SessionResponse & { error?: string }>(
+    '/auth/register',
+    {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    },
+  );
+
+  if (!response.ok || !response.data?.token || !response.data.user || !response.data.usage) {
+    return {
+      ok: false,
+      auth: await getAuthState(),
+      error: response.data?.error ?? 'Registration failed',
+    };
+  }
+
+  return {
+    ok: true,
+    auth: await persistSession(response.data),
+  };
+}
+
+export async function loginAccount(email: string, password: string): Promise<{
+  ok: boolean;
+  auth: GuardianAuthState;
+  error?: string;
+}> {
+  const response = await requestJson<SessionResponse & { error?: string }>(
+    '/auth/login',
+    {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    },
+  );
+
+  if (!response.ok || !response.data?.token || !response.data.user || !response.data.usage) {
+    return {
+      ok: false,
+      auth: await getAuthState(),
+      error: response.data?.error ?? 'Login failed',
+    };
+  }
+
+  return {
+    ok: true,
+    auth: await persistSession(response.data),
+  };
+}
+
+export async function refreshAuthState(): Promise<GuardianAuthState> {
+  const current = await getAuthState();
+  if (!current.token) return current;
+
+  const response = await requestJson<{ user?: GuardianUser; usage?: GuardianUsage; error?: string }>(
+    '/me',
+    { method: 'GET' },
+    current.token,
+  );
+
+  if (!response.ok || !response.data?.user || !response.data?.usage) {
+    if (response.status === 401) {
+      return clearAuthState();
+    }
+    return saveAuthState({ ...current, lastError: response.data?.error ?? 'Failed to refresh account' });
+  }
+
+  return saveAuthState({
+    status: 'authenticated',
+    token: current.token,
+    user: response.data.user,
+    usage: response.data.usage,
+    lastError: null,
+  });
+}
+
+export async function refreshUsage(): Promise<GuardianAuthState> {
+  const current = await getAuthState();
+  if (!current.token || !current.user) return current;
+
+  const response = await requestJson<{ usage?: GuardianUsage; error?: string }>(
+    '/usage',
+    { method: 'GET' },
+    current.token,
+  );
+
+  if (!response.ok || !response.data?.usage) {
+    if (response.status === 401) {
+      return clearAuthState();
+    }
+    return saveAuthState({ ...current, lastError: response.data?.error ?? 'Failed to refresh usage' });
+  }
+
+  return saveAuthState({
+    ...current,
+    usage: response.data.usage,
+    lastError: null,
+  });
+}
+
+export async function logoutAccount(): Promise<GuardianAuthState> {
+  return clearAuthState();
 }
 
 export async function callLLM(
+  cacheKey: string,
   system: string,
-  user: string,
-): Promise<LLMResponse | null> {
-  const key = await getApiKey();
-  if (!key) {
-    console.warn('[Guardian] No OpenAI API key configured');
-    return null;
+  userPrompt: string,
+): Promise<LLMCallResult> {
+  const current = await getAuthState();
+  if (!current.token) {
+    return { status: 'unauthenticated', message: 'Sign in to unlock AI analysis.' };
   }
 
-  // Try once, retry once on transient failure
-  const result = await attemptCall(key, system, user);
-  if (result !== null) return result;
-
-  // Single retry after 1s backoff
-  await new Promise((r) => setTimeout(r, 1000));
-  return attemptCall(key, system, user);
-}
-
-async function attemptCall(
-  key: string,
-  system: string,
-  user: string,
-): Promise<LLMResponse | null> {
-  try {
-    const url = await getApiUrl();
-    const response = await fetch(url, {
+  const response = await requestJson<{
+    analysis?: LLMResponse;
+    usage?: GuardianUsage;
+    error?: string;
+    cached?: boolean;
+  }>(
+    '/analyze',
+    {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model: AI_CONFIG.model,
-        temperature: AI_CONFIG.temperature,
-        max_tokens: AI_CONFIG.maxTokens,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      }),
-      signal: AbortSignal.timeout(AI_CONFIG.timeoutMs),
+      body: JSON.stringify({ cacheKey, system, userPrompt }),
+    },
+    current.token,
+  );
+
+  if (response.ok && response.data?.analysis && response.data.usage) {
+    await saveAuthState({
+      ...current,
+      status: 'authenticated',
+      usage: response.data.usage,
+      lastError: null,
     });
-
-    if (!response.ok) {
-      const err = await response.text().catch(() => 'unknown');
-      console.error(`[Guardian] LLM API error ${response.status}: ${err}`);
-      // Don't retry on 401/403 (auth errors)
-      if (response.status === 401 || response.status === 403) return null;
-      return null;
-    }
-
-    const data = (await response.json()) as {
-      choices?: { message?: { content?: string } }[];
+    return {
+      status: 'ok',
+      response: response.data.analysis,
+      usage: response.data.usage,
+      cached: Boolean(response.data.cached),
     };
-
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) {
-      console.error('[Guardian] Unexpected API response shape');
-      return null;
-    }
-
-    return parseResponse(content);
-  } catch (error) {
-    console.error('[Guardian] LLM call failed:', error);
-    return null;
   }
-}
 
-function parseResponse(raw: string): LLMResponse | null {
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-
-    const score = Number(parsed.score);
-    if (isNaN(score) || score < 0 || score > 100) return null;
-
-    const explanation = String(parsed.explanation ?? '');
-    if (!explanation) return null;
-
-    const riskFactors = Array.isArray(parsed.risk_factors)
-      ? parsed.risk_factors.map(String).slice(0, 5)
-      : [];
-
-    const validActions = ['approve', 'set_exact_amount', 'review_carefully', 'reject'] as const;
-    const action = validActions.includes(parsed.action_suggestion as typeof validActions[number])
-      ? (parsed.action_suggestion as LLMResponse['action_suggestion'])
-      : 'review_carefully';
-
-    return { score: Math.round(score), explanation, risk_factors: riskFactors, action_suggestion: action };
-  } catch (error) {
-    console.debug('[Guardian] LLM response parse failed:', error);
-    return null;
+  if (response.status === 401) {
+    await clearAuthState();
+    return { status: 'unauthenticated', message: 'Your session expired. Sign in again to use AI.' };
   }
+
+  if (response.status === 429) {
+    await saveAuthState({
+      ...current,
+      usage: response.data?.usage ?? current.usage,
+      lastError: response.data?.error ?? 'Daily AI limit reached',
+    });
+    return {
+      status: 'quota_exceeded',
+      message: response.data?.error ?? 'Daily AI limit reached',
+      usage: response.data?.usage ?? current.usage,
+    };
+  }
+
+  const message = response.data?.error ?? 'Guardian AI is temporarily unavailable.';
+  await saveAuthState({ ...current, lastError: message });
+  return { status: 'error', message };
 }

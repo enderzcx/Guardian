@@ -13,14 +13,8 @@
 import type { AnalysisResult } from '@/types';
 import { renderCard, updateCardWithAI } from './card-renderer';
 
-// Inject provider proxy into MAIN world via <script> tag
-function injectProviderProxy(): void {
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('src/inject/provider-proxy.js');
-  script.onload = () => script.remove();
-  (document.head || document.documentElement).appendChild(script);
-}
-injectProviderProxy();
+// Ask the service worker to inject the MAIN-world proxy through chrome.scripting.
+chrome.runtime.sendMessage({ type: 'ENSURE_PROVIDER_PROXY' }).catch(() => {});
 
 let shadowRoot: ShadowRoot | null = null;
 
@@ -37,11 +31,8 @@ function getShadowRoot(): ShadowRoot {
 }
 
 function sendDecision(txId: string, approved: boolean): void {
-  // Decision goes through chrome.runtime (extension-only channel).
-  // Service worker will use chrome.scripting.executeScript to resolve
-  // the MAIN world promise. No postMessage = page scripts can't forge this.
   chrome.runtime.sendMessage({
-    type: 'TX_DECISION',
+    type: 'RESOLVE_TX_DECISION',
     id: txId,
     approved,
   }).catch(() => {});
